@@ -103,6 +103,40 @@ def geodesic_variance(
     return variance, distances
 
 
+def q_filters_query_mean(
+    Q: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Calcola il vettore query medio usando il metodo esatto di Q-filters.
+    
+    Come da repository github.com/NathanGodey/qfilters (make_filters.py, righe 94-101):
+    1. Accumula tutte le query in una matrice Q ∈ R^{N×d}
+    2. Calcola SVD(Q) ≈ U Σ V^T
+    3. Prende il primo vettore singolare destro vh[0] = V_{:,0} ∈ R^d
+       (corretto per segno: media dei segni dei coefficienti di u[:, 0])
+    
+    Differenza da frechet_mean_queries():
+    - Q-filters lavora su query RAW (non normalizzate sull'ipersfera)
+    - Usa SVD direttamente sulla matrice Q, non sulla scatter matrix
+    
+    Args:
+        Q: matrice delle query [N, d]
+    
+    Returns:
+        q_mean: vettore medio [d] (norma arbitraria)
+    """
+    # SVD direttamente sulla matrice Q (righe = campioni, colonne = features)
+    # PyTorch: U [N, min(N,d)], S [min(N,d)], Vh [min(N,d), d]
+    U, S, Vh = torch.linalg.svd(Q.float(), full_matrices=False)
+    
+    # Primo vettore singolare destro Vh[0] = V_{:,0}
+    # Correzione segno: media dei segni di U[:, 0]
+    svd_sign = ((U[:, 0] > 0).float().mean() > 0.5).float() * 2 - 1
+    q_mean = svd_sign * Vh[0, :]
+    
+    return q_mean
+
+
 def frechet_mean_queries(
     Q_list: torch.Tensor,
     n_iter: int = 10,

@@ -9,7 +9,51 @@ from typing import Dict, List, Optional
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from src.geometry.hooks import ActivationSaver, batch_to_planes
-from src.geometry.grassmann import frechet_mean_planes, geodesic_variance, frechet_mean_queries, query_plane_relation
+from src.geometry.grassmann import (
+    frechet_mean_planes,
+    geodesic_variance,
+    frechet_mean_queries,
+    q_filters_query_mean,
+    query_plane_relation,
+)
+
+
+def analyze_query_distribution(
+    q_all: torch.Tensor,
+    U_mean: torch.Tensor,
+) -> Dict[str, float]:
+    """
+    Analizza la distribuzione delle query proiettate sul piano medio.
+    
+    Proietta ogni query q_i sul piano medio (via U_mean):
+        q_proj_i = U_mean^T @ q_i ∈ R^2
+    
+    Poi calcola SVD sulla matrice [N, 2] delle proiezioni.
+    Il rapporto σ₁/σ₂ misura l'anisotropia:
+        - σ₁ ≈ σ₂  → distribuzione isotropica nel piano
+        - σ₁ >> σ₂ → distribuzione concentrata lungo un asse (anisotropica)
+    
+    Args:
+        q_all: vettori query [N, d] (raw, non normalizzati)
+        U_mean: base ortonormale del piano medio [d, 2]
+    
+    Returns:
+        dict con sigma1, sigma2, anisotropy_ratio
+    """
+    # Proietta tutte le query sul piano medio
+    # q_proj: [2, N] = U_mean^T @ q_all^T
+    q_proj = U_mean.T @ q_all.T  # [2, N]
+    
+    # SVD sulla matrice delle proiezioni
+    U, sigma, Vh = torch.linalg.svd(q_proj, full_matrices=False)
+    sigma1, sigma2 = sigma[0].item(), sigma[1].item()
+    ratio = sigma1 / sigma2 if sigma2 > 1e-10 else float('inf')
+    
+    return {
+        "query_sigma1": sigma1,
+        "query_sigma2": sigma2,
+        "query_anisotropy_ratio": ratio,
+    }
 
 
 def analyze_checkpoint(
@@ -71,7 +115,7 @@ def analyze_checkpoint(
         for batch_idx in range(num_analysis_batches):
             # Prepara batch
             texts = []
-            for _ in range(2):  # batch_size=2
+            for _ in range(2):
                 try:
                     texts.append(next(iter(dataset))["text"][:seq_length*4])
                 except StopIteration:
@@ -110,17 +154,21 @@ def analyze_checkpoint(
         if verbose:
             print(f"    Totale vettori: {N}")
         
-        # 1. Media di Frechet dei piani
+        # 1. Media di Frechet dei piani (iterativa, 10 iterazioni)
         U_mean, P_mean = frechet_mean_planes(U_all, n_iter=10)
         
         # 2. Varianza geodesica
         var_g, distances = geodesic_variance(U_all, U_mean)
         
-        # 3. Media delle query
-        q_mean = frechet_mean_queries(q_all)
+        # 3. Media delle query — metodo Q-filters (SVD su matrici raw, non normalizzate)
+        #    Ref: github.com/NathanGodey/qfilters -> make_filters.py (righe 94-101)
+        q_mean = q_filters_query_mean(q_all)
         
         # 4. Relazione query-piano medio
         proj_norm, angle = query_plane_relation(q_mean, U_mean)
+        
+        # 5. Analisi distribuzione query nel piano medio
+        query_dist = analyze_query_distribution(q_all, U_mean)
         
         results[layer_idx] = {
             "num_vectors": N,
@@ -131,12 +179,18 @@ def analyze_checkpoint(
             "q_mean": q_mean.cpu(),
             "query_plane_proj_norm": proj_norm.item(),
             "query_plane_angle": angle.item(),
+            "query_sigma1": query_dist["query_sigma1"],
+            "query_sigma2": query_dist["query_sigma2"],
+            "query_anisotropy_ratio": query_dist["query_anisotropy_ratio"],
         }
         
         if verbose:
             print(f"    Varianza geodesica:  {var_g.item():.6f}")
             print(f"    Proiezione q su P:   {proj_norm.item():.6f}")
             print(f"    Angolo q-P (rad):    {angle.item():.4f}")
+            print(f"    σ1 query nel piano:  {query_dist['query_sigma1']:.4f}")
+            print(f"    σ2 query nel piano:  {query_dist['query_sigma2']:.4f}")
+            print(f"    Anisotropia σ1/σ2:   {query_dist['query_anisotropy_ratio']:.2f}")
     
     return results
 
@@ -154,5 +208,6 @@ def summarize_results(results: Dict):
         print(f"    ||P q̄||:              {metrics['query_plane_proj_norm']:.6f}")
         print(f"    Angolo q̄-P (rad):     {metrics['query_plane_angle']:.4f}")
         print(f"    Angolo q̄-P (gradi):   {metrics['query_plane_angle'] * 180 / 3.14159:.1f}°")
+        print(f"    σ1/σ2 (anisotropia):  {metrics.get('query_anisotropy_ratio', 'N/A')}")
     
     print("\n" + "="*60)

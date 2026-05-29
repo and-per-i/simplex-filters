@@ -30,8 +30,10 @@ from geometry.grassmann import (
     frechet_mean_planes,
     geodesic_variance,
     frechet_mean_queries,
+    q_filters_query_mean,
     query_plane_relation,
 )
+from geometry.analyzer import analyze_query_distribution
 
 
 # ======================================================================
@@ -364,3 +366,97 @@ class TestQueryPlaneRelation:
         _, angle = query_plane_relation(q, U_plane)
         assert abs(angle.item() - 3.14159 / 2) < 0.1, \
             f"Angolo per query ortogonale = {angle}, atteso ~pi/2"
+
+
+# ======================================================================
+# Test: Q-filters query mean
+# ======================================================================
+
+class TestQFiltersQueryMean:
+    """Verifica che q_filters_query_mean() usi il metodo Q-filters."""
+
+    def test_q_filters_shape(self):
+        """SVD su Q [N, d] → vettore medio [d]."""
+        Q = torch.randn(100, 64)
+        q_mean = q_filters_query_mean(Q)
+        assert q_mean.shape == (64,), f"Shape: {q_mean.shape}"
+
+    def test_q_filters_identical_queries(self):
+        """Query identiche → media coincidente."""
+        q = torch.randn(64)
+        Q = q.unsqueeze(0).repeat(50, 1)
+        q_mean = q_filters_query_mean(Q)
+        # Il vettore medio dovrebbe essere collineare con q
+        dot = (q_mean * q).abs().sum().item()
+        norm_q = q.norm().item()
+        norm_mean = q_mean.norm().item()
+        cos_sim = dot / (norm_q * norm_mean + 1e-10)
+        assert cos_sim > 0.99, f"cos_sim = {cos_sim}"
+
+    def test_q_filters_different_from_frechet(self):
+        """Q-filters su raw vs Frechet su normalizzati danno risultati diversi."""
+        Q = torch.randn(100, 64)
+        q_mean_qf = q_filters_query_mean(Q)
+        q_mean_fr = frechet_mean_queries(Q)
+        # Dovrebbero essere diversi (norma diversa, direzione potenzialmente diversa)
+        diff = (q_mean_qf - q_mean_fr).norm().item()
+        assert diff > 1e-6, f"Q-filters e Frechet identici: diff={diff}"
+
+
+# ======================================================================
+# Test: analyze_query_distribution (anisotropia delle query nel piano)
+# ======================================================================
+
+class TestQueryDistribution:
+    """Verifica analisi distribuzione query nel piano medio."""
+
+    def test_distribution_isotropic(self):
+        """Distribuzione uniforme → σ1 ≈ σ2 (ratio vicino a 1)."""
+        U_mean = torch.eye(32)[:, :2]  # piano (e1, e2)
+        q_all = torch.randn(200, 32)    # query casuali → isotropiche
+        
+        result = analyze_query_distribution(q_all, U_mean)
+        ratio = result["query_anisotropy_ratio"]
+        # Con distribuzione uniforme, ratio dovrebbe essere ≈ 1
+        assert 0.5 < ratio < 2.0, f"Anisotropia per distribuzione isotropica: {ratio}"
+
+    def test_distribution_anisotropic(self):
+        """Distribuzione concentrata lungo e1 → σ1 >> σ2."""
+        U_mean = torch.eye(32)[:, :2]  # piano (e1, e2)
+        
+        # Query tutte allineate lungo e1 (molto rumore su e2, ma dominante e1)
+        e1 = U_mean[:, 0]  # [32]
+        noise = torch.randn(200, 32) * 0.01
+        q_all = e1.unsqueeze(0).expand(200, 32) + noise
+        
+        result = analyze_query_distribution(q_all, U_mean)
+        ratio = result["query_anisotropy_ratio"]
+        assert ratio > 3.0, f"Anisotropia non rilevata: σ1/σ2 = {ratio}"
+
+    def test_distribution_output_keys(self):
+        """Output contiene sigma1, sigma2, anisotropy_ratio."""
+        U_mean = torch.eye(16)[:, :2]
+        q_all = torch.randn(50, 16)
+        result = analyze_query_distribution(q_all, U_mean)
+        assert "query_sigma1" in result
+        assert "query_sigma2" in result
+        assert "query_anisotropy_ratio" in result
+        assert result["query_sigma1"] >= result["query_sigma2"], \
+            "sigma1 dovrebbe essere >= sigma2"
+
+    def test_distribution_symmetric_in_plane(self):
+        """Distribuzione simmetrica nel piano → σ1 e σ2 comparabili."""
+        U_mean = torch.eye(32)[:, :2]
+        
+        # Query distribuite uniformemente in un cerchio 2D dentro R^32
+        angles = torch.rand(200) * 2 * 3.14159
+        radii = torch.rand(200)
+        
+        q_2d = torch.stack([radii * torch.cos(angles), radii * torch.sin(angles)], dim=-1)
+        # Proietta nello spazio 32D
+        q_all = q_2d @ U_mean.T  # [200, 32] nel piano
+        
+        result = analyze_query_distribution(q_all, U_mean)
+        ratio = result["query_anisotropy_ratio"]
+        # Distribuzione simmetrica → ratio ≈ 1
+        assert 0.5 < ratio < 2.0, f"Asimmetria in distribuzione simmetrica: {ratio}"
