@@ -1,0 +1,47 @@
+# ==========================================================================
+# Configurazione finetuning modello ibrido LLaMA + 2-Simplicial
+# ==========================================================================
+
+# Modello
+model_name: "meta-llama/Llama-3.1-8B"
+attention_type: "simplicial"    # "simplicial" | "gram_det"
+simplicial_indices: [16, 20, 24, 28]
+alpha: 0.01
+w1: 32
+w2: 256
+
+# Dataset
+dataset_name: "c4"
+dataset_config: "en"
+seq_length: 512
+val_dataset: "wikitext"
+val_dataset_config: "wikitext-2-raw-v1"
+val_samples: 500
+
+# Training
+max_steps: 3000
+per_device_batch_size: 1
+gradient_accumulation_steps: 8
+warmup_steps: 100
+
+# Learning rates
+lr_k2v2: 2.0e-4
+lr_k1v1: 2.0e-5
+weight_decay: 0.01
+beta1: 0.9
+beta2: 0.95
+
+# Monitoring
+log_every: 10
+val_every: 500
+save_every: 1000
+
+# Early stopping
+max_perplexity_gap: 0.5
+
+# Weights & Biases
+wandb_project: "simplex-filters"
+wandb_run_name: "llama-simplicial-finetune"
+
+# Checkpoint
+checkpoint_dir: "./checkpoints"
