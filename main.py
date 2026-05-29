@@ -13,6 +13,7 @@ Usage:
     python main.py --finetune --attention-type gram_det
     python main.py --level 1                     # solo test strutturali
     python main.py --verbose                     # output verboso
+    python main.py --analyze ./checkpoints/trilinear/final  # analisi geometrica
 """
 
 import argparse
@@ -203,6 +204,40 @@ def run_tests(levels, verbose=False, stop_on_failure=False):
 
 
 # ==========================================================================
+# Step 5: Analisi geometrica
+# ==========================================================================
+
+def run_analysis(checkpoint_path: str, verbose: bool = False):
+    """
+    Esegue l'analisi geometrica completa su un checkpoint addestrato.
+    
+    Carica il modello, estrae K1/K2/Q via hook su Wikitext-2,
+    calcola: piano medio (Frechet), varianza geodesica, query media
+    (Q-filters), relazione query-piano, anisotropia nel piano.
+    """
+    from src.geometry.analyzer import analyze_checkpoint, summarize_results
+
+    print(f"\n{BOLD}{'=' * 60}{NC}")
+    print(f"{BOLD}  ANALISI GEOMETRICA{NC}")
+    print(f"{BOLD}  Checkpoint: {checkpoint_path}{NC}")
+    print(f"{BOLD}{'=' * 60}{NC}\n")
+
+    try:
+        results = analyze_checkpoint(
+            checkpoint_path=checkpoint_path,
+            attention_type="simplicial",
+            num_analysis_batches=5,
+            seq_length=256,
+            verbose=verbose,
+        )
+        summarize_results(results)
+        return 0
+    except Exception as e:
+        print_err(f"Analisi geometrica fallita: {e}")
+        return 1
+
+
+# ==========================================================================
 # Step 6: Finetuning
 # ==========================================================================
 
@@ -268,6 +303,8 @@ def main():
                         help="Esegue il finetuning su C4 (implica --real-weights)")
     parser.add_argument("--both", action="store_true",
                         help="Esegue entrambi i training in sequenza: trilineare + Gram Det")
+    parser.add_argument("--analyze", type=str, default=None,
+                        help="Path a checkpoint da analizzare geometricamente")
     parser.add_argument("--finetune-config", type=str,
                         default="./finetuning/config.yaml",
                         help="Path configurazione finetuning (default: finetuning/config.yaml)")
@@ -334,6 +371,12 @@ def main():
         run_finetuning(args, output_subdir="gram_det")
 
         return 0
+
+    # ======================================================================
+    # MODALITA' ANALISI GEOMETRICA
+    # ======================================================================
+    if args.analyze is not None:
+        return run_analysis(args.analyze, verbose=args.verbose)
 
     # ======================================================================
     # MODALITA' TEST / VALIDAZIONE
