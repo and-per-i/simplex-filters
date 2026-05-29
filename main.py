@@ -206,18 +206,24 @@ def run_tests(levels, verbose=False, stop_on_failure=False):
 # Step 6: Finetuning
 # ==========================================================================
 
-def run_finetuning(args):
+def run_finetuning(args, output_subdir=None):
     """
     Esegue il finetuning del modello ibrido su C4.
     Carica pesi reali, converte, addestra, salva checkpoint.
+    
+    Args:
+        args: namespace con tutti i parametri
+        output_subdir: sottocartella per checkpoint (es. "trilinear", "gram_det")
     """
     from finetuning.train_hybrid import train
     from finetuning.utils.optimizer import create_optimizer_groups
     from finetuning.utils.wandb_utils import init_wandb, finish_wandb
     from transformers import AutoTokenizer
 
+    attn_label = "TRILINEARE" if args.attention_type == "simplicial" else "GRAM DET"
+
     print(f"\n{BOLD}{'=' * 60}{NC}")
-    print(f"{BOLD}  FINETUNING: LLaMA + 2-Simplicial su C4{NC}")
+    print(f"{BOLD}  FINETUNING: {attn_label}{NC}")
     print(f"{BOLD}  Attenzione: {args.attention_type}{NC}")
     print(f"{BOLD}{'=' * 60}{NC}\n")
 
@@ -235,6 +241,12 @@ def run_finetuning(args):
     config["attention_type"] = args.attention_type
     config["alpha"] = args.alpha
     config["simplicial_indices"] = SIMPLICIAL_INDICES
+
+    # Checkpoint in sottocartella separata
+    if output_subdir:
+        config["checkpoint_dir"] = os.path.join(
+            os.path.dirname(config["checkpoint_dir"]), output_subdir
+        )
 
     # Esegue training (carica modello, converte, freeze, dataset, loop)
     train(config)
@@ -254,6 +266,8 @@ def main():
     # Modalità
     parser.add_argument("--finetune", action="store_true",
                         help="Esegue il finetuning su C4 (implica --real-weights)")
+    parser.add_argument("--both", action="store_true",
+                        help="Esegue entrambi i training in sequenza: trilineare + Gram Det")
     parser.add_argument("--finetune-config", type=str,
                         default="./finetuning/config.yaml",
                         help="Path configurazione finetuning (default: finetuning/config.yaml)")
@@ -300,6 +314,26 @@ def main():
     if args.finetune:
         ensure_config()
         return run_finetuning(args)
+
+    # ======================================================================
+    # MODALITA' BOTH: TRILINEARE + GRAM DET
+    # ======================================================================
+    if args.both:
+        ensure_config()
+
+        print(f"\n{BOLD}══════════════════════════════════════════════════════════════{NC}")
+        print(f"{BOLD}  RUN 1/2: ATTENZIONE TRILINEARE{NC}")
+        print(f"{BOLD}══════════════════════════════════════════════════════════════{NC}\n")
+        args.attention_type = "simplicial"
+        run_finetuning(args, output_subdir="trilinear")
+
+        print(f"\n{BOLD}══════════════════════════════════════════════════════════════{NC}")
+        print(f"{BOLD}  RUN 2/2: ATTENZIONE GRAM DET{NC}")
+        print(f"{BOLD}══════════════════════════════════════════════════════════════{NC}\n")
+        args.attention_type = "gram_det"
+        run_finetuning(args, output_subdir="gram_det")
+
+        return 0
 
     # ======================================================================
     # MODALITA' TEST / VALIDAZIONE
