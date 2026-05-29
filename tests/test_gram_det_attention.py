@@ -296,6 +296,98 @@ class TestOutputProjection:
 
 
 # ======================================================================
+# Test: Invarianza alle permutazioni e casi degeneri
+# ======================================================================
+
+class TestScoreProperties:
+    """Proprietà teoriche del determinante di Gram."""
+
+    def test_score_symmetry(self):
+        """score(q, k1, k2) == score(q, k2, k1) — Gram e' simmetrica."""
+        attn = GramDetAttention(d_model=64, n_heads=2, window_size=4)
+        B, H, d = 2, 2, 32
+
+        # Crea query e chiavi casuali
+        q   = torch.randn(B, H, 1, d)
+        k1  = torch.randn(B, H, 1, d)
+        k2  = torch.randn(B, H, 1, d)
+
+        score_12 = attn.compute_gram_score(q, k1, k2)
+        score_21 = attn.compute_gram_score(q, k2, k1)
+
+        diff = (score_12 - score_21).abs().max().item()
+        assert diff < 1e-5, \
+            f"Score non simmetrico: score(q,k1,k2) != score(q,k2,k1), diff={diff:.8f}"
+
+    def test_score_symmetry_with_proj(self):
+        """Invarianza vale anche dopo le proiezioni del modello."""
+        attn = GramDetAttention(d_model=64, n_heads=2, window_size=4)
+        x = torch.randn(2, 16, 64)
+
+        # Esegui proiezioni
+        q = attn.q_proj(x).view(2, 16, 2, 32).transpose(1, 2)  # [B, H, N, d]
+        k = attn.k_proj(x).view(2, 16, 2, 32).transpose(1, 2)
+
+        # Prendi vettori specifici
+        q_i  = q[:, :, 3:4, :]   # [B, H, 1, d]
+        k_j1 = k[:, :, 7:8, :]
+        k_j2 = k[:, :, 12:13, :]
+
+        s12 = attn.compute_gram_score(q_i, k_j1, k_j2)
+        s21 = attn.compute_gram_score(q_i, k_j2, k_j1)
+
+        diff = (s12 - s21).abs().max().item()
+        assert diff < 1e-5, \
+            f"Score non simmetrico con proiezioni: diff={diff:.8f}"
+
+    def test_degenerate_case_k1_equals_k2(self):
+        """k1 == k2 → tre vettori linearmente dipendenti → det ≈ 0."""
+        attn = GramDetAttention(d_model=64, n_heads=2, window_size=4)
+        B, H, d = 2, 2, 32
+
+        q   = torch.randn(B, H, 1, d)
+        k1  = torch.randn(B, H, 1, d)
+
+        score = attn.compute_gram_score(q, k1, k1)
+
+        max_score = score.abs().max().item()
+        assert max_score < 1e-5, \
+            f"Score con k1==k2 dovrebbe essere ~0, ma e' {max_score:.8f}"
+
+    def test_degenerate_case_q_parallel_to_k(self):
+        """q ∥ k1 e k2 qualsiasi → Gram ha righe dipendenti → det ≈ 0."""
+        attn = GramDetAttention(d_model=64, n_heads=2, window_size=4)
+        B, H, d = 2, 2, 32
+
+        # Crea q e k1 linearmente dipendenti (q = 2 * k1)
+        k1 = torch.randn(B, H, 1, d)
+        q = 2.0 * k1
+        k2 = torch.randn(B, H, 1, d)
+
+        score = attn.compute_gram_score(q, k1, k2)
+
+        max_score = score.abs().max().item()
+        assert max_score < 1e-5, \
+            f"Score con q∥k1 dovrebbe essere ~0, ma e' {max_score:.8f}"
+
+    def test_random_triplet_nonzero_score(self):
+        """Tre vettori linearmente indipendenti → score ≠ 0."""
+        attn = GramDetAttention(d_model=64, n_heads=2, window_size=4)
+        B, H, d = 2, 2, 32
+
+        q  = torch.randn(B, H, 1, d)
+        k1 = torch.randn(B, H, 1, d)
+        k2 = torch.randn(B, H, 1, d)
+
+        score = attn.compute_gram_score(q, k1, k2)
+
+        # Con d=32 e vettori casuali, è quasi certo che siano indipendenti
+        mean_abs = score.abs().mean().item()
+        assert mean_abs > 1e-6, \
+            f"Score per tripletta random e' quasi zero ({mean_abs:.8f}) — potrebbe essere un bug"
+
+
+# ======================================================================
 # Test: Speed benchmark
 # ======================================================================
 

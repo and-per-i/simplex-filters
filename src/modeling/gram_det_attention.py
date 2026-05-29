@@ -167,6 +167,42 @@ class GramDetAttention(nn.Module):
         return output
 
     # ==========================================================================
+    # Metodo helper per calcolare il determinante di Gram per una tripletta
+    # ==========================================================================
+
+    @torch.no_grad()
+    def compute_gram_score(
+        self,
+        q: torch.Tensor,
+        k1: torch.Tensor,
+        k2: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Calcola det(Gram(q, k1, k2)) per batch di triplette.
+        Usato per test di invarianza e casi degeneri.
+
+        Args:
+            q:  [B, H, 1, d]
+            k1: [B, H, 1, d]
+            k2: [B, H, 1, d]
+
+        Returns:
+            score: [B, H]
+        """
+        qq = (q * q).sum(dim=-1).squeeze(-1)           # [B, H]
+        k1k1 = (k1 * k1).sum(dim=-1).squeeze(-1)        # [B, H]
+        k2k2 = (k2 * k2).sum(dim=-1).squeeze(-1)        # [B, H]
+        qk1 = (q * k1).sum(dim=-1).squeeze(-1)          # [B, H]
+        qk2 = (q * k2).sum(dim=-1).squeeze(-1)          # [B, H]
+        k1k2 = (k1 * k2).sum(dim=-1).squeeze(-1)        # [B, H]
+
+        det = qq * (k1k1 * k2k2 - k1k2**2) \
+            - qk1 * (qk1 * k2k2 - k1k2 * qk2) \
+            + qk2 * (qk1 * k1k2 - k1k1 * qk2)
+
+        return det
+
+    # ==========================================================================
     # Forward naive (con loop) — mantenuto per test di correttezza
     # ==========================================================================
 
