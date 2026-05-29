@@ -14,6 +14,8 @@ Usage:
     python main.py --level 1                     # solo test strutturali
     python main.py --verbose                     # output verboso
     python main.py --analyze ./checkpoints/trilinear/final  # analisi geometrica
+    python main.py --benchmark ./checkpoints/trilinear/final  # benchmark eviction
+    python main.py --ruler ./checkpoints/trilinear/final      # RULER NIAH benchmark
 """
 
 import argparse
