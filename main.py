@@ -1,0 +1,303 @@
+#!/usr/bin/env python3
+"""
+main.py — Entry point principale per simplex-filters.
+
+Pipeline completa:
+1. Carica LLaMA 3.1 8B (config locale gia' presente, pesi da HuggingFace su richiesta)
+2. Salva pesi originali per test
+3. Converte in modello ibrido (SimplicialAttention o GramDetAttention)
+4. Applica freeze dei parametri
+5. Esegue tutti i test con pytest
+6. Riepilogo pass/fail + exit code
+
+Usage:
+    python main.py                              # modello random, test CPU
+    python main.py --real-weights                # scarica 30 GB, test GPU
+    python main.py --attention-type gram_det     # Gram Det invece di trilineare
+    python main.py --level 1                     # solo Level 1
+    python main.py --verbose                     # output verboso
+"""
+
+import argparse
+import os
+import sys
+import platform
+import subprocess
+from pathlib import Path
+
+# ==========================================================================
+# Configurazione
+# ==========================================================================
+
+MODEL_NAME = "meta-llama/Llama-3.1-8B"
+CONFIG_DIR = os.path.join(os.path.dirname(__file__), "llama-3.1-8b")
+SIMPLICIAL_INDICES = [16, 20, 24, 28]
+
+# Colori (ANSI)
+RED = "\033[0;31m"
+GREEN = "\033[0;32m"
+YELLOW = "\033[1;33m"
+BLUE = "\033[0;34m"
+BOLD = "\033[1m"
+NC = "\033[0m"
+
+
+def print_step(label, msg, color=BLUE):
+    print(f"\n  {color}{BOLD}[{label}]{NC} {msg}")
+
+
+def print_ok(msg):
+    print(f"  {GREEN}[OK]{NC} {msg}")
+
+
+def print_warn(msg):
+    print(f"  {YELLOW}[WARN]{NC} {msg}")
+
+
+def print_err(msg):
+    print(f"  {RED}[ERR]{NC} {msg}")
+
+
+# ==========================================================================
+# Step 1: Carica config e modello
+# ==========================================================================
+
+def ensure_config():
+    """Verifica che la config locale di LLaMA 3.1 8B sia presente."""
+    config_file = os.path.join(CONFIG_DIR, "config.json")
+    if not os.path.exists(config_file):
+        print_step("1/5", f"Config non trovata in {CONFIG_DIR}, scarico...")
+        from huggingface_hub import snapshot_download
+        hf_token = os.environ.get("HF_TOKEN")
+        if hf_token is None:
+            print_warn("HF_TOKEN non impostata. Imposta con: export HF_TOKEN=<token>")
+            print_warn("Provo login da cache...")
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        snapshot_download(
+            MODEL_NAME,
+            local_dir=CONFIG_DIR,
+            token=hf_token,
+        )
+        print_ok(f"Config scaricata in {CONFIG_DIR}")
+    else:
+        print_step("1/5", f"Config trovata in {CONFIG_DIR}")
+    return True
+
+
+def load_model(real_weights=False):
+    """Carica LLaMA 3.1 8B."""
+    from transformers import LlamaConfig, AutoModelForCausalLM
+
+    config = LlamaConfig.from_pretrained(CONFIG_DIR)
+    print_ok("Config LLaMA 3.1 8B caricata")
+
+    if real_weights:
+        print_step("2/5", "Caricamento modello con pesi reali da HuggingFace (~30 GB)...")
+        hf_token = os.environ.get("HF_TOKEN")
+        if hf_token:
+            from huggingface_hub import login
+            login(token=hf_token)
+        model = AutoModelForCausalLM.from_pretrained(
+            MODEL_NAME,
+            torch_dtype=torch.bfloat16,
+            device_map="auto",
+            attn_implementation="eager",
+            token=hf_token,
+        )
+        print_ok("Modello con pesi reali caricato")
+    else:
+        print_step("2/5", "Creazione modello con pesi casuali (nessun download 30 GB)")
+        model = AutoModelForCausalLM.from_config(config, torch_dtype=torch.float32)
+        print_ok("Modello con pesi casuali creato")
+
+    return model
+
+
+# ==========================================================================
+# Step 3: Salva pesi originali
+# ==========================================================================
+
+def save_original_weights(model):
+    """Salva i pesi di k_proj e v_proj PRIMA della conversione."""
+    print_step("3/5", "Salvataggio pesi originali per test...")
+    original_weights = {}
+    for idx in SIMPLICIAL_INDICES:
+        attn = model.model.layers[idx].self_attn
+        original_weights[idx] = {
+            "k_proj": attn.k_proj.weight.data.clone(),
+            "v_proj": attn.v_proj.weight.data.clone(),
+        }
+    print_ok(f"Pesi di {len(SIMPLICIAL_INDICES)} layer salvati")
+    return original_weights
+
+
+# ==========================================================================
+# Step 4: Converti in ibrido
+# ==========================================================================
+
+def convert_model(model, attention_type, alpha, w1, w2, gram_window):
+    """Converte il modello in ibrido."""
+    from src.modeling.convert_to_hybrid import convert_llama_to_hybrid
+
+    print_step("4/5", f"Conversione in modello ibrido ({attention_type})...")
+    model, converted = convert_llama_to_hybrid(
+        model,
+        simplicial_indices=SIMPLICIAL_INDICES,
+        alpha=alpha,
+        w1=w1,
+        w2=w2,
+        attention_type=attention_type,
+        gram_window=gram_window,
+    )
+    print_ok(f"{len(converted)} layer convertiti: {converted}")
+    return model, converted
+
+
+# ==========================================================================
+# Step 5: Freeze parametri
+# ==========================================================================
+
+def freeze_model(model, attention_type):
+    """Applica freeze dei parametri."""
+    from src.modeling.convert_to_hybrid import freeze_parameters
+
+    print_step("5/5", f"Congelamento parametri ({attention_type})...")
+    param_groups = freeze_parameters(
+        model,
+        simplicial_indices=SIMPLICIAL_INDICES,
+        attention_type=attention_type,
+    )
+    print_ok(f"Parametri congelati: {len(param_groups)} gruppi")
+    return param_groups
+
+
+# ==========================================================================
+# Step 6: Esegui test
+# ==========================================================================
+
+def run_tests(levels, verbose=False, stop_on_failure=False):
+    """Esegue i test specificati."""
+    import pytest
+
+    targets = []
+    if 1 in levels:
+        targets.append("tests/level_1_structural/")
+        targets.append("tests/test_gram_det_attention.py -k \"not requires_gpu\"")
+    if 2 in levels:
+        targets.append("tests/level_2_forward/")
+    if 3 in levels:
+        targets.append("tests/level_3_numerical/")
+
+    print_step("6/5", f"Esecuzione test: livelli {levels}...")
+    print()
+
+    pytest_args = ["-v"] if verbose else []
+    if stop_on_failure:
+        pytest_args.append("-x")
+
+    all_passed = True
+    for target in targets:
+        cmd = ["pytest", target] + pytest_args
+        print(f"  {BLUE}→{NC} {' '.join(cmd)}")
+        ret = subprocess.run(cmd, capture_output=not verbose)
+        if ret.returncode != 0:
+            all_passed = False
+            if not verbose:
+                print(ret.stdout.decode()[-500:])
+                print(ret.stderr.decode()[-500:])
+
+    return all_passed
+
+
+# ==========================================================================
+# Main
+# ==========================================================================
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="simplex-filters: validazione modello ibrido LLaMA + 2-Simplicial"
+    )
+    parser.add_argument("--real-weights", action="store_true",
+                        help="Scarica pesi reali da HuggingFace (~30 GB)")
+    parser.add_argument("--attention-type", type=str, default="simplicial",
+                        choices=["simplicial", "gram_det"],
+                        help="Tipo di attenzione 2-simpliciale")
+    parser.add_argument("--alpha", type=float, default=0.01,
+                        help="Perturbazione K2/V2 (solo simplicial)")
+    parser.add_argument("--w1", type=int, default=32,
+                        help="Finestra K1 (solo simplicial)")
+    parser.add_argument("--w2", type=int, default=256,
+                        help="Finestra K2 (solo simplicial)")
+    parser.add_argument("--gram-window", type=int, default=8,
+                        help="Half-window per Gram Det")
+    parser.add_argument("--level", type=int, nargs="+", default=[1, 2, 3],
+                        choices=[1, 2, 3],
+                        help="Livelli di test da eseguire (default: 1 2 3)")
+    parser.add_argument("--verbose", action="store_true",
+                        help="Output verboso dei test")
+    parser.add_argument("--stop-on-failure", action="store_true",
+                        help="Ferma al primo fallimento")
+
+    args = parser.parse_args()
+
+    print(f"\n{BOLD}{'=' * 60}{NC}")
+    print(f"{BOLD}  simplex-filters — Validazione modello ibrido{NC}")
+    print(f"{BOLD}  Attenzione: {args.attention_type}{NC}")
+    print(f"{BOLD}  Pesi reali: {args.real_weights}{NC}")
+    print(f"{BOLD}{'=' * 60}{NC}\n")
+
+    # --- Pipeline ---
+    ok = True
+
+    # Step 1
+    ensure_config()
+
+    # Step 2
+    try:
+        model = load_model(real_weights=args.real_weights)
+    except Exception as e:
+        print_err(f"Caricamento modello fallito: {e}")
+        return 1
+
+    # Step 3
+    original_weights = save_original_weights(model)
+
+    # Step 4
+    try:
+        model, converted = convert_model(
+            model,
+            args.attention_type,
+            args.alpha,
+            args.w1,
+            args.w2,
+            args.gram_window,
+        )
+    except Exception as e:
+        print_err(f"Conversione modello fallita: {e}")
+        return 1
+
+    # Step 5
+    try:
+        freeze_model(model, args.attention_type)
+    except Exception as e:
+        print_warn(f"Freeze parametri fallito: {e} (non bloccante)")
+
+    # Step 6
+    verbose_flag = args.verbose or (args.level == [1])
+    ok = run_tests(args.level, verbose=verbose_flag, stop_on_failure=args.stop_on_failure)
+
+    # --- Riepilogo ---
+    print(f"\n{BOLD}{'=' * 60}{NC}")
+    if ok:
+        print(f"  {GREEN}{BOLD}✅ TUTTI I TEST SONO PASSATI.{NC}")
+        ret = 0
+    else:
+        print(f"  {RED}{BOLD}❌ QUALCHE TEST HA FALLITO.{NC}")
+        ret = 1
+    print(f"{BOLD}{'=' * 60}{NC}\n")
+
+    return ret
+
+
+if __name__ == "__main__":
+    sys.exit(main())
