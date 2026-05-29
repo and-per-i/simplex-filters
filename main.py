@@ -381,6 +381,56 @@ def main():
         return run_analysis(args.analyze, verbose=args.verbose)
 
     # ======================================================================
+    # MODALITA' BENCHMARK EVICTION
+    # ======================================================================
+    if args.benchmark is not None:
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        import math
+
+        print(f"\n{BOLD}{'=' * 60}{NC}")
+        print(f"{BOLD}  BENCHMARK EVICTION{NC}")
+        print(f"{BOLD}  Checkpoint: {args.benchmark}{NC}")
+        print(f"{BOLD}{'=' * 60}{NC}\n")
+
+        # Carica LLaMA base UNA SOLA VOLTA (fuori dal benchmark loop)
+        print("Caricamento LLaMA base per baseline...")
+        llama_base = AutoModelForCausalLM.from_pretrained(
+            "meta-llama/Llama-3.1-8B",
+            torch_dtype=torch.bfloat16,
+            device_map="auto",
+            attn_implementation="eager",
+        )
+        llama_base.eval()
+
+        tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.1-8B")
+        tokenizer.pad_token = tokenizer.eos_token
+
+        # Calcola PPL LLaMA base sul validation set
+        from src.kv_cache.benchmark import _eval_ppl_with_eviction
+        from datasets import load_dataset
+        
+        val_dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
+        ppl_llama_base = _eval_ppl_with_eviction(
+            llama_base, tokenizer, val_dataset, None, 0.0, 0.0,
+            budget=1.0, strategy="qfilter",
+            seq_length=256, num_batches=5, device="cuda",
+        )
+        print(f"  Baseline LLaMA base PPL: {ppl_llama_base:.2f}")
+
+        from src.kv_cache.benchmark import benchmark_checkpoint
+        result = benchmark_checkpoint(
+            checkpoint_path=args.benchmark,
+            attention_type=args.attention_type,
+            seq_length=256,
+            num_batches=5,
+            device="cuda",
+            wandb_active=False,
+            llama_base_ppl=ppl_llama_base,
+            tokenizer=tokenizer,
+        )
+        return 0
+
+    # ======================================================================
     # MODALITA' TEST / VALIDAZIONE
     # ======================================================================
     print(f"\n{BOLD}{'=' * 60}{NC}")

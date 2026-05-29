@@ -52,6 +52,9 @@ def benchmark_checkpoint(
     window_size: int = 512,
     device: str = "cuda",
     wandb_active: bool = False,
+    llama_base_model=None,
+    llama_base_ppl: Optional[float] = None,
+    tokenizer=None,
 ) -> BenchmarkResult:
     """
     Benchmark di eviction su un checkpoint addestrato.
@@ -64,6 +67,9 @@ def benchmark_checkpoint(
         window_size: finestra K1
         device: device
         wandb_active: logga su WandB
+        llama_base_model: modello LLaMA base (opzionale, evita ricaricamento)
+        llama_base_ppl: PPL LLaMA base pre-calcolata (opzionale)
+        tokenizer: tokenizer (opzionale, evita ricaricamento)
 
     Returns:
         BenchmarkResult con PPL per ogni budget
@@ -75,7 +81,7 @@ def benchmark_checkpoint(
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from src.geometry.analyzer import analyze_checkpoint
 
-    # 1. Carica modello
+    # 1. Carica modello ibrido
     print(f"\nCaricamento checkpoint: {checkpoint_path}")
     model = AutoModelForCausalLM.from_pretrained(
         checkpoint_path,
@@ -85,8 +91,10 @@ def benchmark_checkpoint(
     )
     model.eval()
 
-    tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.1-8B")
-    tokenizer.pad_token = tokenizer.eos_token
+    # Tokenizer (riusa se passato, altrimenti carica)
+    if tokenizer is None:
+        tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.1-8B")
+        tokenizer.pad_token = tokenizer.eos_token
 
     # 2. Calcola analisi geometrica UNA SOLA VOLTA
     print("Analisi geometrica...")
@@ -117,6 +125,12 @@ def benchmark_checkpoint(
     # 3. Prepara batch di validazione
     dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
 
+    # 4a. Logga baseline LLaMA base (una volta, all'inizio)
+    if llama_base_ppl is not None and wandb_active:
+        import wandb
+        wandb.log({"eval/llama_base_perplexity": llama_base_ppl})
+
+    # 4b. Loop sui budget B
     for budget in budgets:
         print(f"\n  Budget: {budget*100:.0f}%")
 
@@ -144,6 +158,21 @@ def benchmark_checkpoint(
                 f"ppl_qfilter_{budget:.2f}": ppl_qf,
                 f"ppl_random_{budget:.2f}": ppl_rand,
             })
+
+    # 4c. Logga hybrid_no_eviction (B=100%) e perplexity_gap
+    if 1.0 in result.ppl_qfilter and wandb_active:
+        import wandb
+        ppl_hybrid = result.ppl_qfilter[1.0]
+        wandb.log({"eval/hybrid_no_eviction_perplexity": ppl_hybrid})
+
+        if llama_base_ppl is not None:
+            gap = ppl_hybrid - llama_base_ppl
+            wandb.log({"eval/perplexity_gap": gap})
+            passed = gap < 0.5
+            wandb.log({"eval/gate_passed": 1.0 if passed else 0.0})
+            print(f"\n  🔍 LLaMA base PPL: {llama_base_ppl:.2f}")
+            print(f"  🔍 Ibrido (B=100%) PPL: {ppl_hybrid:.2f}")
+            print(f"  🔍 Gap: {gap:+.2f}  — {'✅ PASS' if passed else '❌ FAIL'} (soglia: 0.5)")
 
     print(result.summary())
     return result
