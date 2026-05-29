@@ -1,0 +1,24 @@
+# simplex-filters — Dipendenze
+# ==========================================================================
+# Installazione: pip install -r requirements.txt
+
+# Core
+torch>=2.4.0
+transformers>=4.43.0
+datasets>=2.18.0
+huggingface_hub>=0.23.0
+pyyaml>=6.0
+
+# Attenzione 2-simpliciale (kernel GPU opzionali)
+# triton>=3.0.0            # kernel FBGEMM (solo GPU, installare dal fork tlx)
+
+# Training e logging
+wandb>=0.16.0
+tqdm>=4.66.0
+
+# Test
+pytest>=8.0.0
+
+# Utilità (già parte di Python stdlib o installate con torch)
+# - math, os, sys, argparse, subprocess, typing, dataclasses, yaml
+# - numpy (via torch)

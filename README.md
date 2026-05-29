@@ -1,113 +1,131 @@
 # simplex-filters
 
-## Fast 2-Simplicial Attention
+## 2-Simplicial Attention: Geometrica e KV Cache Eviction
 
-Implementazione di kernel GPU ad alte prestazioni per **2-Simplicial Attention**, basata sui paper:
+Implementazione di **attenzione 2-simpliciale** per Transformer, con analisi geometrica basata sulla **Grassmanniana** e **KV cache eviction** guidata dal **Q-filter**. Parte della tesi di laurea.
 
-- [Logic and the 2-Simplicial Transformer](https://arxiv.org/abs/1909.00668) — Clift et al., 2019
-- [Fast and Simplex: 2-Simplicial Attention in Triton](https://arxiv.org/pdf/2507.02754) — Roy et al., 2025
-
-### Cos'è l'Attenzione 2-Simpliciale?
-
-L'attenzione 2-simpliciale generalizza il **dot-product attention** standard (bilineare tra Q e K) a una **forma trilineare** tra Q, K e K':
-
-```
-A_ijk = ⟨q_i, k_j, k'_k⟩
-```
-
-Questo produce un tensore di attenzione di terzo ordine invece della matrice 2D standard, consentendo interazioni triadiche tra i token.
-
-### Architettura del Progetto
+## Architettura
 
 ```
 simplex-filters/
-├── simplicial_attention/         # Package principale
-│   ├── simplicial/               # Codice sorgente
-│   │   ├── __init__.py
-│   │   ├── utils.py              # Utility (TFLOPS, SQNR, assert)
-│   │   └── ops/                  # Implementazioni kernel
-│   │       ├── triton/           # Kernel Triton (forward + backward)
-│   │       │   ├── fwd.py        # Forward pass (online softmax, sliding window)
-│   │       │   └── bwd.py        # Backward pass (two-pass senza atomiche)
-│   │       ├── tlx/              # Kernel TLX (Triton eXtended)
-│   │       │   ├── fwd_ws.py             # TLX sliding window forward
-│   │       │   ├── fwd_ws_pipelined.py   # TLX con pipelining
-│   │       │   └── fwd_ws_pingpong.py    # TLX con ping-pong buffering
-│   │       └── pytorch/          # Implementazione di riferimento PyTorch
-│   │           └── two_simplicial_attention.py  # Module + autograd Function
-│   ├── benchmarks/               # Benchmark delle performance
-│   │   ├── bench_fwd.py
-│   │   └── _proton/              # Benchmark con Proton profiler
-│   ├── tests/                    # Test suite
-│   ├── scripts/                  # Script di utilità
-│   └── setup.py                  # Installazione package
+├── main.py                              # Entry point (6 modalità)
+├── src/
+│   ├── modeling/                        # Attenzione 2-simpliciale
+│   │   ├── simplicial_attention.py       # Trilineare (kernel Triton, 520 TFLOPS)
+│   │   ├── gram_det_attention.py         # Gram Det vettorizzato (puro PyTorch)
+│   │   └── convert_to_hybrid.py          # Converte LLaMA in ibrido
+│   ├── geometry/                         # Analisi Grassmanniana
+│   │   ├── plane.py                      # Piano via SVD, angoli, distanza geodesica
+│   │   ├── grassmann.py                  # Media di Frechet, Q-filters query mean
+│   │   ├── hooks.py                      # Forward hook per K1/K2/Q
+│   │   └── analyzer.py                   # Pipeline analisi geometrica completa
+│   └── kv_cache/                         # KV Cache eviction
+│       ├── qfilter_score.py              # Score = √(σ₁²⟨k,e₂⟩² + σ₂²⟨k,e₁⟩²)
+│       ├── eviction.py                   # Top-B eviction + random baseline
+│       ├── benchmark.py                  # Perplexity vs budget B
+│       └── ruler/niah_benchmark.py       # RULER NIAH (8K/16K)
+├── finetuning/                           # Training su C4
+│   ├── config.yaml                       # Iperparametri
+│   ├── train_hybrid.py                   # Loop manuale + 3 LR gruppi
+│   └── utils/                            # Data, optimizer, metrics, wandb
+├── tests/                                # 70+ test
+└── simplicial_attention/                 # Kernel FBGEMM (da Meta)
 ```
 
-### Implementazioni Disponibili
+## Istruzioni Rapide
 
-#### 1. Kernel Triton (`simplicial.ops.triton`)
-- **Forward**: online softmax (stile Flash Attention), sliding window (w1=512, w2=32), GQA packing
-- **Backward**: due kernel separati per evitare atomiche (kv1 kernel + kv2q kernel two-pass)
-- Raggiunge ~520 TFLOPS su GPU
+```bash
+# 1. Installa dipendenze
+pip install -r requirements.txt
 
-#### 2. Kernel TLX (`simplicial.ops.tlx`)
-- Implementazione ad alte prestazioni con Tensor Descriptor e TMA
-- Tre varianti: sliding window base, pipelined, ping-pong buffering
-- Configurazioni per num_heads=64 e num_heads=128
+# 2. LLaMA config (scaricato automaticamente al primo run)
+#    Configura HF_TOKEN per pesi reali:
+export HF_TOKEN="hf_yourtoken"
 
-#### 3. Riferimento PyTorch (`simplicial.ops.pytorch`)
-- `SimplicialAttention` module (wrappa forward + backward Triton)
-- `torch_fwd_ref` — forward di riferimento con einsum O(s³)
-- `torch_bwd_ref` — backward via autograd
-- `torch_simplicial_bwd` — backward manuale
-- Varianti: `strassen` e `rank1` per forme alternative dei logits
-
-### Requisiti
-
-- PyTorch (GPU)
-- Triton (branch `tlx` per kernel TLX)
-- GPU con supporto CUDA
-
-### Utilizzo Rapido
-
-```python
-import torch
-from simplicial.ops.triton.fwd import triton_fwd
-
-# Setup tensori
-batch_size, seq_len, num_heads, head_dim = 4, 1024, 64, 128
-device = torch.cuda.current_device()
-
-Q = torch.randn(batch_size, seq_len, num_heads, head_dim, device=device, dtype=torch.bfloat16)
-K1 = torch.randn(batch_size, seq_len, 1, head_dim, device=device, dtype=torch.bfloat16)
-K2 = torch.randn(batch_size, seq_len, 1, head_dim, device=device, dtype=torch.bfloat16)
-V1 = torch.randn(batch_size, seq_len, 1, head_dim, device=device, dtype=torch.bfloat16)
-V2 = torch.randn(batch_size, seq_len, 1, head_dim, device=device, dtype=torch.bfloat16)
-
-# Forward pass con sliding window (w1=32, w2=256)
-output, max_plus_lse = triton_fwd(Q, K1, K2, V1, V2, w1=32, w2=256)
-
-# Oppure con il modulo PyTorch completo (include backward)
-from simplicial.ops.pytorch.two_simplicial_attention import SimplicialAttention
-attn = SimplicialAttention(head_dim=128, n_heads=64, w1=32, w2=256)
-output = attn(xq, xk1, xk2, xv1, xv2)
+# 3. Sei modalità
+python main.py                              # Test suite (~70 test CPU)
+python main.py --real-weights               # Test con LLaMA reale (GPU)
+python main.py --finetune                   # Training su C4
+python main.py --both                       # Trilineare + Gram Det in sequenza
+python main.py --analyze ./checkpoints/...  # Analisi geometrica
+python main.py --benchmark ./checkpoints/.. # Benchmark eviction PPL
+python main.py --ruler ./checkpoints/...    # Benchmark NIAH
 ```
 
-### Dettagli Kernel Forward (Triton)
+## Modalità nel dettaglio
 
-Il forward pass implementa:
+| Comando | Cosa fa |
+|---------|---------|
+| `python main.py` | Test suite automatica su modello random (CPU). Salva `test_results.txt` |
+| `python main.py --real-weights` | Test con LLaMA 3.1 8B reale (scarica ~30 GB da HuggingFace) |
+| `python main.py --finetune` | Training su C4 con 3 LR gruppi (frozen, K1/V1, K2/V2) + WandB logging |
+| `python main.py --both` | Pipeline completa: baseline LLaMA + fine-tuning trilineare + Gram Det |
+| `python main.py --analyze ./ckpt/final` | Analisi Grassmanniana: piano medio, varianza, Q-filter, anisotropia |
+| `python main.py --benchmark ./ckpt/final` | Perplexity vs budget B (50/30/10%) con Q-filter vs random |
+| `python main.py --ruler ./ckpt/final` | RULER NIAH accuracy a 8K/16K contesto con Q-filter vs random |
+
+## Prerequisiti
+
+- Python 3.10+
+- GPU con almeno 24 GB (per training, 48+ GB per --both)
+- Token HuggingFace per scaricare LLaMA 3.1 8B
+- WandB API key per logging training
+
+## Installazione della GPU vast.ai
+
+```bash
+# Vast.ai template: pytorch/pytorch:2.4.0-cuda12.1-cudnn8-devel
+git clone https://github.com/and-per-i/simplex-filters.git
+cd simplex-filters
+pip install -r requirements.txt
+
+# Variabili d'ambiente
+export HF_TOKEN="hf_yourtoken"
+export WANDB_API_KEY="your_wandb_key"
+
+# Training completo
+python main.py --both --verbose
 ```
-logits = einsum("btnh,bsnh,brnh->bntsr", Q, K, K')
-attention = softmax(logits + causal_mask, axis=[-1, -2])
-output = einsum("bntsr,bsnh,brnh->btnh", attention, V, V')
+
+## Componenti chiave
+
+### Attenzione 2-simpliciale
+Due meccanismi di scoring per la tripletta (query, key1, key2):
+
+| Meccanismo | Score | Kernel | RF LOPS |
+|-----------|-------|--------|---------|
+| Trilineare | `Σ h q[h]·k1[h]·k2[h]` | Triton custom | 520 |
+| Gram Det | `det(Gram(q, k1, k2))` | PyTorch vettorizzato | - |
+
+### Analisi geometrica (Grassmanniana)
+Ogni coppia (k1, k2) definisce un **punto sulla Grassmanniana Gr(2,d)**. L'analisi calcola:
+- **Piano medio**: media di Frechet sulla Grassmanniana
+- **Varianza geodesica**: dispersione dei piani attorno al piano medio
+- **Q-filter score per eviction**: `√(σ₁²⟨k, e₂⟩² + σ₂²⟨k, e₁⟩²)`
+- **Relazione query-piano**: `||P q̄||` — se ≈ 0, query ortogonale al piano → volume massimizzato
+- **Anisotropia**: distribuzione delle query projetate nel piano medio (σ₁/σ₂)
+
+### KV Cache Eviction
+Lo score Q-filter viene usato per selezionare le top-B chiavi nella finestra K1 (w1=512), riducendo il costo computazionale dell'attenzione 2-simpliciale mantenendo l'accuratezza. Benchmark su:
+- **Perplexity** su Wikitext-2 a vari budget B (100%, 50%, 30%, 10%)
+- **RULER NIAH** (Needle-In-A-Haystack) a 8K e 16K token
+- Confronto con **random eviction** come baseline
+
+## Tests
+
+```bash
+# Tutti i test CPU
+python -m pytest tests/ -k "not requires_gpu" -v
+
+# Tutti i test (GPU richiesto per alcuni)
+./tests/run_all.sh
+
+# Report automatico su test_results.txt (ogni run di python main.py)
 ```
 
-Con sliding window: ogni query Q[i] attende a w1 posizioni di K e w2 posizioni di K', riducendo la complessità da O(n³) a O(n × w1 × w2).
+## Citazione
 
-### Dettagli Kernel Backward (Triton)
-
-Il backward decomponi il calcolo in due kernel separati:
-1. **kv1 kernel**: calcola dK1, dV1 (senza atomiche su K1, V1)
-2. **kv2q kernel**: calcola dQ, dK2, dV2 usando un approccio two-pass (even/odd tiles) che evita operazioni atomiche
-
-Pre-calcolo di `d = sum(O * dO, dim=-1)` per il gradiente del softmax.
+Basato su:
+- Clift et al., "Logic and the 2-Simplicial Transformer", 2019
+- Roy et al., "Fast and Simplex: 2-Simplicial Attention in Triton", 2025
+- Godey et al., "Q-filters", 2024
