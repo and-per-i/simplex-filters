@@ -307,6 +307,8 @@ def main():
                         help="Path a checkpoint da analizzare geometricamente")
     parser.add_argument("--benchmark", type=str, default=None,
                         help="Path a checkpoint per benchmark eviction Q-filter")
+    parser.add_argument("--ruler", type=str, default=None,
+                        help="Path a checkpoint per benchmark RULER NIAH")
     parser.add_argument("--finetune-config", type=str,
                         default="./finetuning/config.yaml",
                         help="Path configurazione finetuning (default: finetuning/config.yaml)")
@@ -428,6 +430,40 @@ def main():
             llama_base_ppl=ppl_llama_base,
             tokenizer=tokenizer,
         )
+        return 0
+
+    # ======================================================================
+    # MODALITA' RULER BENCHMARK
+    # ======================================================================
+    if args.ruler is not None:
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        from src.kv_cache.ruler.niah_benchmark import run_niah_benchmark
+        
+        print(f"\n{BOLD}{'=' * 60}{NC}")
+        print(f"{BOLD}  RULER NIAH BENCHMARK{NC}")
+        print(f"{BOLD}  Checkpoint: {args.ruler}{NC}")
+        print(f"{BOLD}{'=' * 60}{NC}\n")
+
+        model = AutoModelForCausalLM.from_pretrained(
+            args.ruler,
+            torch_dtype=torch.bfloat16,
+            device_map="auto",
+            attn_implementation="eager",
+        )
+        model.eval()
+
+        tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.1-8B")
+        tokenizer.pad_token = tokenizer.eos_token
+
+        result = run_niah_benchmark(
+            model=model,
+            tokenizer=tokenizer,
+            checkpoint_path=args.ruler,
+            attention_type=args.attention_type,
+            device="cuda",
+            wandb_active=False,
+        )
+        print(result.summary())
         return 0
 
     # ======================================================================
