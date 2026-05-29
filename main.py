@@ -179,6 +179,9 @@ def run_tests(levels, verbose=False, stop_on_failure=False):
     if 1 in levels:
         targets.append("tests/level_1_structural/")
         targets.append("tests/test_gram_det_attention.py -k \"not requires_gpu\"")
+        targets.append("tests/test_geometry.py")
+        targets.append("tests/test_kv_cache.py")
+        targets.append("tests/test_ruler.py")
     if 2 in levels:
         targets.append("tests/level_2_forward/")
     if 3 in levels:

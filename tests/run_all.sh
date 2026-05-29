@@ -158,10 +158,40 @@ run_test_group \
     "-k \"not requires_gpu\"" || exit 1
 
 # ==========================================================================
-# FASE 2b - Forward + Backward (GPU)
+# FASE 2b - Geometrica Grassmanniana (CPU, test di geometria)
 # ==========================================================================
 
-print_header "FASE 2b: Forward + Backward (GPU - richiede Triton)"
+print_header "FASE 2b: Geometria Grassmanniana (CPU)"
+
+run_test_group \
+    "Geometry - Piani, Frechet, Q-filters, anisotropia" \
+    "tests/test_geometry.py" \
+    false \
+    "" || true
+
+# ==========================================================================
+# FASE 2c - KV Cache + RULER (CPU, test di eviction)
+# ==========================================================================
+
+print_header "FASE 2c: KV Cache + RULER NIAH (CPU)"
+
+run_test_group \
+    "KV Cache - Q-filter score, eviction, benchmark" \
+    "tests/test_kv_cache.py" \
+    true \
+    "" || exit 1
+
+run_test_group \
+    "RULER - NIAH generazione, parsing, forward, risultati" \
+    "tests/test_ruler.py" \
+    true \
+    "" || exit 1
+
+# ==========================================================================
+# FASE 2d - Forward + Backward (GPU)
+# ==========================================================================
+
+print_header "FASE 2d: Forward + Backward (GPU - richiede Triton)"
 
 if [ "$CPU_ONLY" = false ] && [ "$GPU_AVAILABLE" = "True" ]; then
     run_test_group \
