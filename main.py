@@ -305,6 +305,8 @@ def main():
                         help="Esegue entrambi i training in sequenza: trilineare + Gram Det")
     parser.add_argument("--analyze", type=str, default=None,
                         help="Path a checkpoint da analizzare geometricamente")
+    parser.add_argument("--benchmark", type=str, default=None,
+                        help="Path a checkpoint per benchmark eviction Q-filter")
     parser.add_argument("--finetune-config", type=str,
                         default="./finetuning/config.yaml",
                         help="Path configurazione finetuning (default: finetuning/config.yaml)")
