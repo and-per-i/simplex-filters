@@ -42,6 +42,19 @@ BOLD = "\033[1m"
 NC = "\033[0m"
 
 
+def free_gpu_memory(*models):
+    """Libera memoria GPU tra modelli diversi per evitare OOM."""
+    import gc
+    import torch
+    for m in models:
+        if m is not None:
+            del m
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    print_ok("Memoria GPU liberata")
+
+
 def print_step(label, msg, color=BLUE):
     print(f"\n  {color}{BOLD}[{label}]{NC} {msg}")
 
@@ -455,17 +468,50 @@ def main():
     if args.both:
         ensure_config()
 
+        # FASE 0: Baseline LLaMA
         print(f"\n{BOLD}══════════════════════════════════════════════════════════════{NC}")
-        print(f"{BOLD}  RUN 1/2: ATTENZIONE TRILINEARE{NC}")
+        print(f"{BOLD}  FASE 0: BASELINE LLaMA{NC}")
+        print(f"{BOLD}══════════════════════════════════════════════════════════════{NC}\n")
+        from transformers import AutoModelForCausalLM
+        import torch
+        llama_base = AutoModelForCausalLM.from_pretrained(
+            "meta-llama/Llama-3.1-8B",
+            torch_dtype=torch.bfloat16,
+            device_map="auto",
+            attn_implementation="eager",
+        )
+        llama_base.eval()
+        # TODO: calcola baseline perplexity + RULER accuracy
+        free_gpu_memory(llama_base)
+
+        # FASE 1: TRILINEARE
+        print(f"\n{BOLD}══════════════════════════════════════════════════════════════{NC}")
+        print(f"{BOLD}  FASE 1/2: FINETUNING TRILINEARE{NC}")
         print(f"{BOLD}══════════════════════════════════════════════════════════════{NC}\n")
         args.attention_type = "simplicial"
         run_finetuning(args, output_subdir="trilinear")
 
+        # FASE 1b: Analisi + benchmark trilineare
+        print(f"\n{BOLD}  FASE 1b: ANALISI + BENCHMARK TRILINEARE{NC}\n")
+        ckpt_path = os.path.join(os.path.dirname(args.finetune_config), "trilinear", "final")
+        run_analysis(ckpt_path, verbose=args.verbose)
+
+        # TODO: benchmark_checkpoint + RULER qui
+        free_gpu_memory()
+
+        # FASE 2: GRAM DET
         print(f"\n{BOLD}══════════════════════════════════════════════════════════════{NC}")
-        print(f"{BOLD}  RUN 2/2: ATTENZIONE GRAM DET{NC}")
+        print(f"{BOLD}  FASE 2/2: FINETUNING GRAM DET{NC}")
         print(f"{BOLD}══════════════════════════════════════════════════════════════{NC}\n")
         args.attention_type = "gram_det"
         run_finetuning(args, output_subdir="gram_det")
+
+        # FASE 2b: Analisi + benchmark Gram Det
+        print(f"\n{BOLD}  FASE 2b: ANALISI + BENCHMARK GRAM DET{NC}\n")
+        ckpt_path_gd = os.path.join(os.path.dirname(args.finetune_config), "gram_det", "final")
+        run_analysis(ckpt_path_gd, verbose=args.verbose)
+
+        free_gpu_memory()
 
         return 0
 
