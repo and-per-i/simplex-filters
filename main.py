@@ -171,40 +171,128 @@ def freeze_model(model, attention_type):
 # Step 5: Esegui test
 # ==========================================================================
 
-def run_tests(levels, verbose=False, stop_on_failure=False):
-    """Esegue i test specificati."""
+def run_tests(levels, verbose=False, stop_on_failure=False, model_name="random"):
+    """
+    Esegue i test specificati e scrive un report su test_results.txt.
+    
+    Args:
+        levels: livelli da eseguire
+        verbose: output verboso
+        stop_on_failure: ferma al primo fallimento
+        model_name: nome del modello per il report
+    
+    Returns:
+        True se tutti i test passano
+    """
     import pytest
+    import re
 
     targets = []
+    sections = []
+    
     if 1 in levels:
         targets.append("tests/level_1_structural/")
+        sections.append("LEVEL 1 — STRUTTURALE")
         targets.append("tests/test_gram_det_attention.py -k \"not requires_gpu\"")
+        sections.append("LEVEL 1 — GRAMDET")
         targets.append("tests/test_geometry.py")
+        sections.append("LEVEL 1 — GEOMETRIA")
         targets.append("tests/test_kv_cache.py")
+        sections.append("LEVEL 1 — KV CACHE")
         targets.append("tests/test_ruler.py")
+        sections.append("LEVEL 1 — RULER")
     if 2 in levels:
         targets.append("tests/level_2_forward/")
+        sections.append("LEVEL 2 — FORWARD + BACKWARD")
     if 3 in levels:
         targets.append("tests/level_3_numerical/")
+        sections.append("LEVEL 3 — NUMERICO")
 
     print_step("5/5", f"Esecuzione test: livelli {levels}...")
     print()
 
-    pytest_args = ["-v"] if verbose else []
-    if stop_on_failure:
-        pytest_args.append("-x")
+    # Raccogli tutti i risultati
+    all_output = []
+    total_passed = 0
+    total_failed = 0
+    total_skipped = 0
 
-    all_passed = True
     for target in targets:
-        cmd = ["pytest", target] + pytest_args
-        print(f"  {BLUE}→{NC} {' '.join(cmd)}")
-        ret = subprocess.run(cmd, capture_output=not verbose)
-        if ret.returncode != 0:
-            all_passed = False
-            if not verbose:
-                print(ret.stdout.decode()[-500:])
-                print(ret.stderr.decode()[-500:])
+        cmd = ["pytest", target, "--tb=short", "-q"] + (["-x"] if stop_on_failure else []) + (["-v"] if verbose else [])
+        
+        if verbose:
+            print(f"  {BLUE}→{NC} {' '.join(cmd)}")
+        
+        ret = subprocess.run(cmd, capture_output=True, text=True)
+        output = ret.stdout + ret.stderr
+        
+        # Parsiifica risultati
+        for line in output.split("\n"):
+            # Formato pytest: test_name.py::test_func PASSED
+            # Formato pytest -q: test_file.py::test_func PASSED
+            m = re.search(r'(PASSED|FAILED|SKIPPED|ERROR)', line)
+            if m and ("::" in line or "test_" in line):
+                status = m.group(1)
+                if status == "PASSED":
+                    total_passed += 1
+                elif status in ("FAILED", "ERROR"):
+                    total_failed += 1
+                else:
+                    total_skipped += 1
+        
+        all_output.append(output)
+        
+        if verbose:
+            print(output[-1000:] if len(output) > 1000 else output)
 
+        if ret.returncode != 0 and not stop_on_failure:
+            # Mostra gli errori principali
+            error_lines = [l for l in output.split("\n") if "FAILED" in l or "ERROR" in l]
+            if error_lines:
+                print(f"  {RED}Errori:{NC}")
+                for err in error_lines[:5]:
+                    print(f"    {err}")
+
+    # Scrivi il report
+    from datetime import datetime
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    report_path = os.path.join(os.path.dirname(__file__), "test_results.txt")
+    separator = "=" * 74
+    
+    with open(report_path, "a") as f:
+        f.write(f"\n{separator}\n")
+        f.write(f"  simplex-filters — Test Results\n")
+        f.write(f"  Modello: {model_name}\n")
+        f.write(f"  Data: {now}\n")
+        f.write(f"{separator}\n")
+        
+        for idx, output in enumerate(all_output):
+            section_name = sections[idx] if idx < len(sections) else f"TEST {idx}"
+            f.write(f"\n[{section_name}]\n")
+            
+            for line in output.split("\n"):
+                line_stripped = line.strip()
+                if "::" in line_stripped and ("PASSED" in line_stripped or "FAILED" in line_stripped or "SKIPPED" in line_stripped):
+                    # Estrai solo il nome del test e lo stato
+                    parts = line_stripped.split("::")
+                    test_name = parts[-1] if len(parts) > 1 else line_stripped
+                    symbol = {"PASSED": "✔", "FAILED": "✘", "SKIPPED": "⊘", "ERROR": "✘"}
+                    status_symbol = symbol.get(re.search(r'(PASSED|FAILED|SKIPPED|ERROR)', line_stripped).group(1), "?")
+                    f.write(f"  {status_symbol} {test_name}\n")
+        
+        total = total_passed + total_failed + total_skipped
+        f.write(f"\n{separator}\n")
+        f.write(f"  SUMMARY\n")
+        f.write(f"  Total: {total} | Passed: {total_passed} | Failed: {total_failed} | Skipped: {total_skipped}\n")
+        f.write(f"{separator}\n\n")
+    
+    all_passed = total_failed == 0
+    
+    # Stampa riepilogo
+    print(f"\n  {GREEN}Passed: {total_passed}{NC} {RED}Failed: {total_failed}{NC} {YELLOW}Skipped: {total_skipped}{NC}")
+    print(f"  Report salvato: {report_path}")
+    
     return all_passed
 
 
