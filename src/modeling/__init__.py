@@ -1,2 +1,3 @@
 from .simplicial_attention import SimplicialAttention
-from .convert_to_hybrid import convert_llama_to_hybrid
+from .convert_to_hybrid import convert_llama_to_hybrid, freeze_parameters
+from .gram_det_attention import GramDetAttention, sarrus_determinant
