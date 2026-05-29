@@ -56,6 +56,11 @@ DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.yaml")
 # Valore dalla literature, usato per early stopping
 LLAMA_BASELINE_PPL = 8.2
 
+# Colori ANSI per output
+GREEN = "\033[0;32m"
+YELLOW = "\033[1;33m"
+NC = "\033[0m"
+
 
 def load_config(config_path: str = DEFAULT_CONFIG_PATH, overrides: dict = None) -> dict:
     """Carica config YAML e applica override da CLI."""
@@ -69,6 +74,42 @@ def load_config(config_path: str = DEFAULT_CONFIG_PATH, overrides: dict = None) 
 # ==========================================================================
 # Training loop
 # ==========================================================================
+
+def check_env_vars(wandb_active: bool):
+    """Verifica variabili d'ambiente necessarie."""
+    hf_token = os.environ.get("HF_TOKEN")
+    wandb_key = os.environ.get("WANDB_API_KEY")
+
+    print(f"\n  {'─'*40}")
+    print("  PREREQUISITI:")
+    print(f"  {'─'*40}")
+
+    # HF_TOKEN
+    if hf_token:
+        print(f"  {GREEN}[OK]{NC} HF_TOKEN impostato")
+    else:
+        print(f"  {YELLOW}[WARN]{NC} HF_TOKEN non impostato")
+        print(f"  {YELLOW}      Il download del modello da HuggingFace richiede:{NC}")
+        print(f"  {YELLOW}      1. Accettare licenza su https://hf.co/meta-llama/Llama-3.1-8B{NC}")
+        print(f"      2. Generare token su https://hf.co/settings/tokens")
+        print(f"      3. export HF_TOKEN=hf_yourtoken")
+        print(f"      Oppure assicurati di essere loggato con huggingface-cli login")
+
+    # WANDB_API_KEY
+    if wandb_active:
+        if wandb_key or os.path.exists(os.path.expanduser("~/.netrc")):
+            print(f"  {GREEN}[OK]{NC} WANDB_API_KEY impostato")
+        else:
+            print(f"  {YELLOW}[WARN]{NC} WANDB_API_KEY non impostato e .netrc non trovato")
+            print(f"  {YELLOW}      WandB non potra' autenticarsi.{NC}")
+            print(f"      Per attivare: export WANDB_API_KEY=your_wandb_key")
+            print(f"      Oppure: wandb login")
+    else:
+        print(f"  {YELLOW}[INFO]{NC} WandB disabilitato (non installato o --no-wandb)")
+        print(f"      Logging solo su stdout.")
+
+    print(f"  {'─'*40}\n")
+
 
 def train(config: dict):
     """
@@ -84,13 +125,15 @@ def train(config: dict):
     print(f"  Device: {device}")
     print(f"  Attention type: {config['attention_type']}")
     print(f"  Indici layer simpliciali: {config['simplicial_indices']}")
-    print(f"{'='*60}\n")
+    print(f"{'='*60}")
 
-    # --- WandB ---
+    # --- WandB + check prerequisites ---
     wandb_active = init_wandb(config)
     if wandb_active:
         import wandb
         wandb.config.update(config, allow_val_change=True)
+
+    check_env_vars(wandb_active)
 
     # --- Carica modello ---
     print(f"\n[1/5] Caricamento modello: {config['model_name']}")
