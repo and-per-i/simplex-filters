@@ -184,21 +184,36 @@ def freeze_model(model, attention_type):
 # Step 5: Esegui test
 # ==========================================================================
 
-def run_tests(levels, verbose=False, stop_on_failure=False, model_name="random"):
+def run_tests(levels, verbose=False, stop_on_failure=False, model_name="random", model_type="hybrid"):
     """
     Esegue i test specificati e scrive un report su test_results.txt.
+    
+    I test vengono filtrati per tipo di modello:
+    - "llama_base": salta tutti i test strutturali (solo perplexity/RULER
+      calcolati separatamente)
+    - "trilinear" / "gram_det": esegue tutti i test pertinenti
+    - "hybrid": default, tutti i test
     
     Args:
         levels: livelli da eseguire
         verbose: output verboso
         stop_on_failure: ferma al primo fallimento
         model_name: nome del modello per il report
+        model_type: tipo di modello per filtrare i test
+            ("llama_base", "trilinear", "gram_det", "hybrid")
     
     Returns:
         True se tutti i test passano
     """
     import pytest
     import re
+
+    # LLaMA base non ha layer simpliciali → nessun test strutturale
+    if model_type == "llama_base":
+        print_step("5/5", "LLaMA base: nessun test strutturale (skip)")
+        print(f"  {YELLOW}[INFO]{NC} I test per LLaMA base sono solo perplexity + RULER,")
+        print(f"  eseguiti dalle modalita' dedicate.")
+        return True
 
     targets = []
     sections = []
@@ -221,7 +236,8 @@ def run_tests(levels, verbose=False, stop_on_failure=False, model_name="random")
         targets.append("tests/level_3_numerical/")
         sections.append("LEVEL 3 — NUMERICO")
 
-    print_step("5/5", f"Esecuzione test: livelli {levels}...")
+    model_tag = {"trilinear": "TRILINEARE", "gram_det": "GRAM DET", "hybrid": "IBRIDO"}.get(model_type, model_name)
+    print_step("5/5", f"Esecuzione test: {model_tag} — livelli {levels}...")
     print()
 
     # Raccogli tutti i risultati
@@ -644,7 +660,9 @@ def main():
 
     # Step 6: Test
     verbose_flag = args.verbose or (args.level == [1])
-    ok = run_tests(args.level, verbose=verbose_flag, stop_on_failure=args.stop_on_failure)
+    model_type = "llama_base" if not args.real_weights else args.attention_type
+    ok = run_tests(args.level, verbose=verbose_flag, stop_on_failure=args.stop_on_failure,
+                   model_type=model_type)
 
     # Riepilogo
     print(f"\n{BOLD}{'=' * 60}{NC}")
