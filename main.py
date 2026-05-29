@@ -2,19 +2,16 @@
 """
 main.py — Entry point principale per simplex-filters.
 
-Pipeline completa:
-1. Carica LLaMA 3.1 8B (config locale gia' presente, pesi da HuggingFace su richiesta)
-2. Salva pesi originali per test
-3. Converte in modello ibrido (SimplicialAttention o GramDetAttention)
-4. Applica freeze dei parametri
-5. Esegue tutti i test con pytest
-6. Riepilogo pass/fail + exit code
+Modalità:
+  Default (--test): Carica modello → Converti → Freeze → Test suite
+  --finetune:       Carica modello → Converti → Freeze → Training su C4 → Valutazione
 
 Usage:
-    python main.py                              # modello random, test CPU
-    python main.py --real-weights                # scarica 30 GB, test GPU
-    python main.py --attention-type gram_det     # Gram Det invece di trilineare
-    python main.py --level 1                     # solo Level 1
+    python main.py                              # solo test
+    python main.py --finetune                   # finetuning completo
+    python main.py --finetune --max-steps 5000  # finetuning con override
+    python main.py --finetune --attention-type gram_det
+    python main.py --level 1                     # solo test strutturali
     python main.py --verbose                     # output verboso
 """
 
@@ -63,7 +60,7 @@ def print_err(msg):
 # ==========================================================================
 
 def ensure_config():
-    """Verifica che la config locale di LLaMA 3.1 8B sia presente."""
+    """Verifica che la config locale sia presente."""
     config_file = os.path.join(CONFIG_DIR, "config.json")
     if not os.path.exists(config_file):
         print_step("1/5", f"Config non trovata in {CONFIG_DIR}, scarico...")
@@ -73,11 +70,7 @@ def ensure_config():
             print_warn("HF_TOKEN non impostata. Imposta con: export HF_TOKEN=<token>")
             print_warn("Provo login da cache...")
         os.makedirs(CONFIG_DIR, exist_ok=True)
-        snapshot_download(
-            MODEL_NAME,
-            local_dir=CONFIG_DIR,
-            token=hf_token,
-        )
+        snapshot_download(MODEL_NAME, local_dir=CONFIG_DIR, token=hf_token)
         print_ok(f"Config scaricata in {CONFIG_DIR}")
     else:
         print_step("1/5", f"Config trovata in {CONFIG_DIR}")
@@ -114,7 +107,7 @@ def load_model(real_weights=False):
 
 
 # ==========================================================================
-# Step 3: Salva pesi originali
+# Step 2: Salva pesi originali
 # ==========================================================================
 
 def save_original_weights(model):
@@ -132,7 +125,7 @@ def save_original_weights(model):
 
 
 # ==========================================================================
-# Step 4: Converti in ibrido
+# Step 3: Converti in ibrido
 # ==========================================================================
 
 def convert_model(model, attention_type, alpha, w1, w2, gram_window):
@@ -154,7 +147,7 @@ def convert_model(model, attention_type, alpha, w1, w2, gram_window):
 
 
 # ==========================================================================
-# Step 5: Freeze parametri
+# Step 4: Freeze parametri
 # ==========================================================================
 
 def freeze_model(model, attention_type):
@@ -172,7 +165,7 @@ def freeze_model(model, attention_type):
 
 
 # ==========================================================================
-# Step 6: Esegui test
+# Step 5: Esegui test
 # ==========================================================================
 
 def run_tests(levels, verbose=False, stop_on_failure=False):
@@ -188,7 +181,7 @@ def run_tests(levels, verbose=False, stop_on_failure=False):
     if 3 in levels:
         targets.append("tests/level_3_numerical/")
 
-    print_step("6/5", f"Esecuzione test: livelli {levels}...")
+    print_step("5/5", f"Esecuzione test: livelli {levels}...")
     print()
 
     pytest_args = ["-v"] if verbose else []
@@ -210,18 +203,69 @@ def run_tests(levels, verbose=False, stop_on_failure=False):
 
 
 # ==========================================================================
+# Step 6: Finetuning
+# ==========================================================================
+
+def run_finetuning(args):
+    """
+    Esegue il finetuning del modello ibrido su C4.
+    Carica pesi reali, converte, addestra, salva checkpoint.
+    """
+    from finetuning.train_hybrid import train
+    from finetuning.utils.optimizer import create_optimizer_groups
+    from finetuning.utils.wandb_utils import init_wandb, finish_wandb
+    from transformers import AutoTokenizer
+
+    print(f"\n{BOLD}{'=' * 60}{NC}")
+    print(f"{BOLD}  FINETUNING: LLaMA + 2-Simplicial su C4{NC}")
+    print(f"{BOLD}  Attenzione: {args.attention_type}{NC}")
+    print(f"{BOLD}{'=' * 60}{NC}\n")
+
+    # Carica config di training
+    import yaml
+    config_path = args.finetune_config
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
+
+    # Override parametri da CLI
+    if args.max_steps is not None:
+        config["max_steps"] = args.max_steps
+    if args.lr_k2v2 is not None:
+        config["lr_k2v2"] = args.lr_k2v2
+    config["attention_type"] = args.attention_type
+    config["alpha"] = args.alpha
+    config["simplicial_indices"] = SIMPLICIAL_INDICES
+
+    # Esegue training (carica modello, converte, freeze, dataset, loop)
+    train(config)
+
+    return 0
+
+
+# ==========================================================================
 # Main
 # ==========================================================================
 
 def main():
     parser = argparse.ArgumentParser(
-        description="simplex-filters: validazione modello ibrido LLaMA + 2-Simplicial"
+        description="simplex-filters: validazione e finetuning modello ibrido LLaMA + 2-Simplicial"
     )
+
+    # Modalità
+    parser.add_argument("--finetune", action="store_true",
+                        help="Esegue il finetuning su C4 (implica --real-weights)")
+    parser.add_argument("--finetune-config", type=str,
+                        default="./finetuning/config.yaml",
+                        help="Path configurazione finetuning (default: finetuning/config.yaml)")
+
+    # Parametri modello
     parser.add_argument("--real-weights", action="store_true",
                         help="Scarica pesi reali da HuggingFace (~30 GB)")
     parser.add_argument("--attention-type", type=str, default="simplicial",
                         choices=["simplicial", "gram_det"],
                         help="Tipo di attenzione 2-simpliciale")
+
+    # Parametri conversione
     parser.add_argument("--alpha", type=float, default=0.01,
                         help="Perturbazione K2/V2 (solo simplicial)")
     parser.add_argument("--w1", type=int, default=32,
@@ -230,6 +274,16 @@ def main():
                         help="Finestra K2 (solo simplicial)")
     parser.add_argument("--gram-window", type=int, default=8,
                         help="Half-window per Gram Det")
+
+    # Parametri finetuning (override della config YAML)
+    parser.add_argument("--max-steps", type=int, default=None,
+                        help="Override max_steps per finetuning")
+    parser.add_argument("--lr-k2v2", type=float, default=None,
+                        help="Override learning rate per K2/V2")
+    parser.add_argument("--lr-k1v1", type=float, default=None,
+                        help="Override learning rate per K1/V1")
+
+    # Parametri test
     parser.add_argument("--level", type=int, nargs="+", default=[1, 2, 3],
                         choices=[1, 2, 3],
                         help="Livelli di test da eseguire (default: 1 2 3)")
@@ -240,53 +294,55 @@ def main():
 
     args = parser.parse_args()
 
+    # ======================================================================
+    # MODALITA' FINETUNING
+    # ======================================================================
+    if args.finetune:
+        ensure_config()
+        return run_finetuning(args)
+
+    # ======================================================================
+    # MODALITA' TEST / VALIDAZIONE
+    # ======================================================================
     print(f"\n{BOLD}{'=' * 60}{NC}")
     print(f"{BOLD}  simplex-filters — Validazione modello ibrido{NC}")
     print(f"{BOLD}  Attenzione: {args.attention_type}{NC}")
     print(f"{BOLD}  Pesi reali: {args.real_weights}{NC}")
     print(f"{BOLD}{'=' * 60}{NC}\n")
 
-    # --- Pipeline ---
-    ok = True
-
-    # Step 1
+    # Step 1: Config
     ensure_config()
 
-    # Step 2
+    # Step 2: Modello
     try:
         model = load_model(real_weights=args.real_weights)
     except Exception as e:
         print_err(f"Caricamento modello fallito: {e}")
         return 1
 
-    # Step 3
+    # Step 3: Pesi originali
     original_weights = save_original_weights(model)
 
-    # Step 4
+    # Step 4: Conversione
     try:
         model, converted = convert_model(
-            model,
-            args.attention_type,
-            args.alpha,
-            args.w1,
-            args.w2,
-            args.gram_window,
+            model, args.attention_type, args.alpha, args.w1, args.w2, args.gram_window,
         )
     except Exception as e:
         print_err(f"Conversione modello fallita: {e}")
         return 1
 
-    # Step 5
+    # Step 5: Freeze
     try:
         freeze_model(model, args.attention_type)
     except Exception as e:
         print_warn(f"Freeze parametri fallito: {e} (non bloccante)")
 
-    # Step 6
+    # Step 6: Test
     verbose_flag = args.verbose or (args.level == [1])
     ok = run_tests(args.level, verbose=verbose_flag, stop_on_failure=args.stop_on_failure)
 
-    # --- Riepilogo ---
+    # Riepilogo
     print(f"\n{BOLD}{'=' * 60}{NC}")
     if ok:
         print(f"  {GREEN}{BOLD}✅ TUTTI I TEST SONO PASSATI.{NC}")
