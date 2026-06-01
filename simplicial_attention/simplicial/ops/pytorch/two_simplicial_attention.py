@@ -82,11 +82,21 @@ def _torch_2simplicial_fwd(xq, xk1, xk2, xv1, xv2, w1, w2):
     Invece di materializzare il tensore S×S×S (8.6 GB a S=512),
     itera per ogni posizione query e calcola solo la finestra locale.
 
+    Include i bias K2 e V2 come nel kernel Triton e nella reference:
+        k2 += 1/D   (K2_BIAS = 1/head_dim)
+        v2 += 1     (V2_BIAS = 1.0)
+    
+    Questi bias sono essenziali per stabilità numerica:
+    - K2 bias: evita che il prodotto triplo q·k1·k2 esploda (varianza ~ d³)
+    - V2 bias: garantisce output.e' una media pesata di V1 (come attenzione standard)
+
     Complessità: O(B * H * S * w1 * w2 * D) invece di O(B * H * S³ * D)
     Memoria:    O(B * H * S * w1 * w2) invece di O(B * H * S³)
     """
     B, S, H, D = xq.shape
     sm_scale = 1.0 / math.sqrt(D)
+    k2_bias = 1.0 / D
+    v2_bias = 1.0
     output = torch.zeros(B, S, H, D, device=xq.device, dtype=xq.dtype)
 
     for i in range(S):
@@ -101,6 +111,10 @@ def _torch_2simplicial_fwd(xq, xk1, xk2, xv1, xv2, w1, w2):
         k2_window = xk2[:, k_start:k_end, :, :]  # [B, w2, H, D]
         v1_window = xv1[:, j_start:j_end, :, :]  # [B, w1, H, D]
         v2_window = xv2[:, k_start:k_end, :, :]  # [B, w2, H, D]
+
+        # Applica bias K2 e V2 (essenziali per stabilità)
+        k2_window = k2_window + k2_bias
+        v2_window = v2_window + v2_bias
 
         # q_i: [B, 1, H, D] → squeeze → [B, H, D]
         q_i = xq[:, i:i+1, :, :]  # [B, 1, H, D]

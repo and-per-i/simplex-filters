@@ -93,6 +93,7 @@ def analyze_checkpoint(
         torch_dtype=torch.bfloat16,
         device_map=device,
         attn_implementation="eager",
+        local_files_only=True,
     )
     model.eval()
     
