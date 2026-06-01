@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+ #!/usr/bin/env python3
 """
 main.py — Entry point principale per simplex-filters.
 
@@ -362,7 +362,105 @@ def run_analysis(checkpoint_path: str, verbose: bool = False):
 
 
 # ==========================================================================
-# Step 6: Finetuning
+# Step 6: Test su checkpoint addestrato
+# ==========================================================================
+
+def run_test_checkpoint(checkpoint_path: str, attention_type: str, verbose: bool = False):
+    """
+    Carica un checkpoint addestrato, esegue i test strutturali/forward/numerici,
+    e scrive il report su test_results.txt.
+    
+    Args:
+        checkpoint_path: path al checkpoint
+        attention_type: tipo di attenzione ("simplicial" o "gram_det")
+        verbose: output verboso
+    """
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from src.modeling.convert_to_hybrid import convert_llama_to_hybrid, freeze_parameters
+
+    print(f"\n{BOLD}{'=' * 60}{NC}")
+    print(f"{BOLD}  TEST SU CHECKPOINT: {checkpoint_path}{NC}")
+    print(f"{BOLD}{'=' * 60}{NC}\n")
+
+    model = AutoModelForCausalLM.from_pretrained(
+        checkpoint_path,
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+        attn_implementation="eager",
+        local_files_only=True,
+    )
+    model.eval()
+
+    # Test strutturali sul checkpoint
+    model_type = "trilinear" if attention_type == "simplicial" else "gram_det"
+    ok = run_tests(
+        levels=[1, 2, 3],
+        model_name=f"checkpoint_{model_type}",
+        model_type=model_type,
+        verbose=verbose,
+        stop_on_failure=False,
+    )
+
+    return 0 if ok else 1
+
+
+def run_llama_base_baseline():
+    """
+    Calcola baseline perplexity + RULER per LLaMA base puro.
+    Carica il modello, calcola, libera GPU, stampa risultati.
+    """
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from src.kv_cache.benchmark import _eval_ppl_with_eviction
+    from src.kv_cache.ruler.niah_benchmark import generate_single_niah, extract_answer, check_answer
+    from datasets import load_dataset
+    import math
+
+    print(f"\n{BOLD}{'=' * 60}{NC}")
+    print(f"{BOLD}  BASELINE LLaMA BASE{NC}")
+    print(f"{BOLD}{'=' * 60}{NC}\n")
+
+    model = AutoModelForCausalLM.from_pretrained(
+        "meta-llama/Llama-3.1-8B",
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+        attn_implementation="eager",
+    )
+    model.eval()
+
+    tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.1-8B")
+    tokenizer.pad_token = tokenizer.eos_token
+
+    # Baseline perplexity
+    val_dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
+    ppl_llama = _eval_ppl_with_eviction(
+        model, tokenizer, val_dataset, None, 0.0, 0.0,
+        budget=1.0, strategy="qfilter",
+        seq_length=256, num_batches=5, device="cuda",
+    )
+    print(f"  Baseline LLaMA PPL: {ppl_llama:.2f}")
+
+    # Baseline RULER (NIAH singolo)
+    correct = 0
+    total = 10
+    for test_idx in range(total):
+        input_ids, expected_answer, prompt = generate_single_niah(
+            tokenizer, context_len=8192, needle_pos=0.5,
+        )
+        input_ids = input_ids.unsqueeze(0).to("cuda" if torch.cuda.is_available() else "cpu")
+        with torch.no_grad():
+            logits = model(input_ids).logits
+        predicted = extract_answer(logits, tokenizer)
+        if check_answer(predicted, expected_answer):
+            correct += 1
+    ruler_acc = correct / total
+    print(f"  Baseline RULER accuracy (8K): {ruler_acc*100:.1f}% ({correct}/{total})")
+
+    free_gpu_memory(model)
+    return ppl_llama, ruler_acc
+
+
+# ==========================================================================
+# Step 7: Finetuning
 # ==========================================================================
 
 def run_finetuning(args, output_subdir=None):
@@ -433,6 +531,8 @@ def main():
                         help="Path a checkpoint per benchmark eviction Q-filter")
     parser.add_argument("--ruler", type=str, default=None,
                         help="Path a checkpoint per benchmark RULER NIAH")
+    parser.add_argument("--test-checkpoint", type=str, default=None,
+                        help="Path a checkpoint da testare (strutturali/forward/numerico)")
     parser.add_argument("--finetune-config", type=str,
                         default="./finetuning/config.yaml",
                         help="Path configurazione finetuning (default: finetuning/config.yaml)")
@@ -487,20 +587,8 @@ def main():
         ensure_config()
 
         # FASE 0: Baseline LLaMA
-        print(f"\n{BOLD}══════════════════════════════════════════════════════════════{NC}")
-        print(f"{BOLD}  FASE 0: BASELINE LLaMA{NC}")
-        print(f"{BOLD}══════════════════════════════════════════════════════════════{NC}\n")
-        from transformers import AutoModelForCausalLM
-        import torch
-        llama_base = AutoModelForCausalLM.from_pretrained(
-            "meta-llama/Llama-3.1-8B",
-            torch_dtype=torch.bfloat16,
-            device_map="auto",
-            attn_implementation="eager",
-        )
-        llama_base.eval()
-        # TODO: calcola baseline perplexity + RULER accuracy
-        free_gpu_memory(llama_base)
+        run_llama_base_baseline()
+        free_gpu_memory()
 
         # FASE 1: TRILINEARE
         print(f"\n{BOLD}══════════════════════════════════════════════════════════════{NC}")
@@ -509,12 +597,10 @@ def main():
         args.attention_type = "simplicial"
         run_finetuning(args, output_subdir="trilinear")
 
-        # FASE 1b: Analisi + benchmark trilineare
-        print(f"\n{BOLD}  FASE 1b: ANALISI + BENCHMARK TRILINEARE{NC}\n")
+        # FASE 1b: Analisi + benchmark + test trilineare
         ckpt_path = os.path.join(os.path.dirname(args.finetune_config), "trilinear", "final")
         run_analysis(ckpt_path, verbose=args.verbose)
-
-        # TODO: benchmark_checkpoint + RULER qui
+        run_test_checkpoint(ckpt_path, "trilinear", verbose=args.verbose)
         free_gpu_memory()
 
         # FASE 2: GRAM DET
@@ -524,11 +610,10 @@ def main():
         args.attention_type = "gram_det"
         run_finetuning(args, output_subdir="gram_det")
 
-        # FASE 2b: Analisi + benchmark Gram Det
-        print(f"\n{BOLD}  FASE 2b: ANALISI + BENCHMARK GRAM DET{NC}\n")
+        # FASE 2b: Analisi + benchmark + test Gram Det
         ckpt_path_gd = os.path.join(os.path.dirname(args.finetune_config), "gram_det", "final")
         run_analysis(ckpt_path_gd, verbose=args.verbose)
-
+        run_test_checkpoint(ckpt_path_gd, "gram_det", verbose=args.verbose)
         free_gpu_memory()
 
         return 0
@@ -622,6 +707,16 @@ def main():
         )
         print(result.summary())
         return 0
+
+    # ======================================================================
+    # MODALITA' TEST SU CHECKPOINT
+    # ======================================================================
+    if args.test_checkpoint is not None:
+        return run_test_checkpoint(
+            args.test_checkpoint,
+            attention_type=args.attention_type,
+            verbose=args.verbose,
+        )
 
     # ======================================================================
     # MODALITA' TEST / VALIDAZIONE
