@@ -14,8 +14,14 @@ import math
 
 import torch
 import torch.nn.functional as F
-from simplicial.ops.triton.bwd import triton_bwd
-from simplicial.ops.triton.fwd import triton_fwd
+
+# Tentativo di importare i kernel Triton; se fallisce si usa il fallback PyTorch
+try:
+    from simplicial.ops.triton.bwd import triton_bwd
+    from simplicial.ops.triton.fwd import triton_fwd
+    _USE_TRITON = True
+except (ImportError, RuntimeError):
+    _USE_TRITON = False
 
 
 class SimplicialAttention(torch.nn.Module):
@@ -61,6 +67,41 @@ class SimplicialAttention(torch.nn.Module):
         return output
 
 
+def _torch_2simplicial_fwd(xq, xk1, xk2, xv1, xv2, w1, w2):
+    """
+    Pure PyTorch forward di attenzione 2-simpliciale.
+    Usato come fallback se il kernel Triton non e' disponibile.
+    """
+    # x*: [B, S, H, D]
+    import math
+    B, S, H, D = xq.shape
+    sm_scale = 1.0 / math.sqrt(D)
+    device = xq.device
+    
+    # logits: [B, H, S, S, S] = einsum('btkh,bskh,brkh->bhtsr', q, k1, k2)
+    logits = torch.einsum("btkh,bskh,brkh->bhtsr", xq, xk1, xk2) * sm_scale
+    
+    # Maschera sliding window
+    if w1 > 0 and w2 > 0:
+        q_idx = torch.arange(S, device=device)
+        kv1_idx = torch.arange(S, device=device)
+        kv2_idx = torch.arange(S, device=device)
+        kv1_mask = ((q_idx[:, None] - w1) < kv1_idx[None, :]) & (kv1_idx[None, :] <= q_idx[:, None])
+        kv2_mask = ((q_idx[:, None, None] - w2) < kv2_idx[None, None, :]) & (kv2_idx[None, None, :] <= q_idx[:, None, None])
+        local_mask = kv1_mask[:, None, None, :, None] & kv2_mask[:, None, None, None, :]
+        logits = torch.where(local_mask, logits, -float("inf"))
+    
+    # Softmax su [S, S] per ogni query
+    shape = logits.shape  # [B, H, S, S, S]
+    logits_flat = logits.reshape(B, H, S, -1)
+    attn = F.softmax(logits_flat, dim=-1).reshape(shape)
+    
+    # output: [B, S, H, D] = einsum('bhtsr,bskh,brkh->btkh', attn, v1, v2)
+    output = torch.einsum("bhtsr,bskh,brkh->btkh", attn, xv1, xv2)
+    
+    return output, attn
+
+
 class SimplicialAttentionFunction(torch.autograd.Function):
     @staticmethod
     def forward(
@@ -73,41 +114,55 @@ class SimplicialAttentionFunction(torch.autograd.Function):
         w1: int,
         w2: int,
     ):
-        output, max_plus_lse = triton_fwd(xq, xk1, xk2, xv1, xv2, w1, w2)
+        if _USE_TRITON:
+            try:
+                output, max_plus_lse = triton_fwd(xq, xk1, xk2, xv1, xv2, w1, w2)
+                ctx.use_triton = True
+                ctx.w1 = w1
+                ctx.w2 = w2
+                ctx.save_for_backward(xq, xk1, xk2, xv1, xv2, output, max_plus_lse)
+                return output
+            except Exception:
+                pass  # fallback a PyTorch
+        
+        # Fallback PyTorch
+        output, attn = _torch_2simplicial_fwd(xq, xk1, xk2, xv1, xv2, w1, w2)
+        ctx.use_triton = False
+        ctx.save_for_backward(xq, xk1, xk2, xv1, xv2, attn)
         ctx.w1 = w1
         ctx.w2 = w2
-        ctx.save_for_backward(xq, xk1, xk2, xv1, xv2, output, max_plus_lse)
-
         return output
 
     @staticmethod
-    def backward(
-        ctx,
-        grad_output,
-    ):
-        q, k1, k2, v1, v2, output, max_plus_lse = ctx.saved_tensors
-        dq, dk1, dk2, dv1, dv2 = triton_bwd(
-            q,
-            k1,
-            k2,
-            v1,
-            v2,
-            ctx.w1,
-            ctx.w2,
-            output,
-            grad_output,
-            max_plus_lse,
-        )
-
-        return (
-            dq,
-            dk1,
-            dk2,
-            dv1,
-            dv2,
-            None,
-            None,
-        )
+    def backward(ctx, grad_output):
+        if ctx.use_triton:
+            q, k1, k2, v1, v2, output, max_plus_lse = ctx.saved_tensors
+            dq, dk1, dk2, dv1, dv2 = triton_bwd(
+                q, k1, k2, v1, v2, ctx.w1, ctx.w2, output, grad_output, max_plus_lse,
+            )
+            return dq, dk1, dk2, dv1, dv2, None, None
+        
+        # Fallback PyTorch backward via autograd
+        q, k1, k2, v1, v2, attn = ctx.saved_tensors
+        
+        # dv1: [B, S, H, D]
+        dv1 = torch.einsum("bhtsr,btkh,brkh->bskh", attn, grad_output, v2)
+        dv2 = torch.einsum("bhtsr,btkh,bskh->brkh", attn, grad_output, v1)
+        
+        # dp: gradiente rispetto ai logits
+        dp = torch.einsum("btkh,bskh,brkh->bhtsr", grad_output, v1, v2)
+        B, H, S, _, _ = dp.shape
+        dp_flat = dp.reshape(B, H, S, -1)
+        attn_flat = attn.reshape(B, H, S, -1)
+        ds_flat = attn_flat * (dp_flat - (attn_flat * dp_flat).sum(dim=-1, keepdim=True))
+        ds = ds_flat.reshape(*attn.shape)
+        
+        sm_scale = 1.0 / math.sqrt(q.shape[-1])
+        dq = torch.einsum("bhtsr,bskh,brkh->btkh", ds, k1, k2) * sm_scale
+        dk1 = torch.einsum("bhtsr,btkh,brkh->bskh", ds, q, k2) * sm_scale
+        dk2 = torch.einsum("bhtsr,btkh,bskh->brkh", ds, q, k1) * sm_scale
+        
+        return dq, dk1, dk2, dv1, dv2, None, None
 
 
 # ======================= Forward passes. =======================
