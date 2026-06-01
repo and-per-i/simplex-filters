@@ -65,25 +65,56 @@ def compute_k1k2_distances(
 def evaluate_loss(
     model,
     val_batch: Dict[str, torch.Tensor],
+    chunk_size: int = 8,
 ) -> float:
     """
-    Calcola la loss media su un batch di validazione.
+    Calcola la loss media su un batch di validazione, processando a chunk.
 
+    Val_batch puo' contenere centinaia di campioni (es. 500). Processarli tutti
+    in un unico forward causa OOM su GPU da 48 GB (matrici S×S per ogni campione).
+    
+    Dividiamo in chunk di chunk_size campioni, calcoliamo la loss per ogni chunk,
+    e facciamo la media pesata per numero di token.
+    
     Args:
         model: modello ibrido
         val_batch: dict con input_ids, labels, attention_mask
+        chunk_size: campioni per chunk (default: 8)
 
     Returns:
         loss media (float)
     """
     model.eval()
-    outputs = model(
-        input_ids=val_batch["input_ids"],
-        labels=val_batch["labels"],
-    )
-    loss = outputs.loss.item()
+    
+    input_ids = val_batch["input_ids"]
+    labels = val_batch["labels"]
+    attention_mask = val_batch.get("attention_mask")
+    
+    N = input_ids.shape[0]
+    total_loss = 0.0
+    total_tokens = 0
+    
+    for start in range(0, N, chunk_size):
+        end = min(start + chunk_size, N)
+        chunk_inputs = input_ids[start:end]
+        chunk_labels = labels[start:end]
+        
+        outputs = model(
+            input_ids=chunk_inputs,
+            labels=chunk_labels,
+        )
+        
+        # outputs.loss e' gia' la media per token
+        # Pesiamo per il numero di token nel chunk
+        loss_val = outputs.loss.item()
+        n_tokens = (chunk_labels != -100).sum().item() if hasattr(chunk_labels, 'sum') else chunk_labels.numel()
+        
+        total_loss += loss_val * n_tokens
+        total_tokens += n_tokens
+    
+    avg_loss = total_loss / max(total_tokens, 1)
     model.train()
-    return loss
+    return avg_loss
 
 
 @torch.no_grad()
