@@ -227,6 +227,8 @@ def train(config: dict):
     cumulative_loss = 0.0
     best_ppl = float('inf')
     early_stopped = False
+    patience_counter = 0
+    max_patience = 3
 
     for batch in train_loader:
         if global_step >= config["max_steps"]:
@@ -285,15 +287,18 @@ def train(config: dict):
             print(f"  L2 K1/K2: {val_metrics.get('val/l2_k1k2_mean', 0):.6f}")
             print(f"  L2 V1/V2: {val_metrics.get('val/l2_v1v2_mean', 0):.6f}")
 
-            # Check miglior PPL
-            if ppl < best_ppl:
+            # Early stopping basato su patience: ferma se PPL non migliora per 3 validation consecutive
+            if ppl >= best_ppl:
+                patience_counter += 1
+                print(f"  Patience: {patience_counter}/{max_patience}")
+            else:
+                patience_counter = 0
                 best_ppl = ppl
-                print(f"  Nuova best PPL: {ppl:.2f}")
+                print(f"  Nuova best PPL: {ppl:.2f} (patience resettata)")
 
-            # Early stopping
-            if delta > config["max_perplexity_gap"]:
+            if patience_counter >= max_patience:
                 print(f"\n{'='*50}")
-                print(f"  EARLY STOPPING: PPL gap {delta:.2f} > {config['max_perplexity_gap']}")
+                print(f"  EARLY STOPPING: PPL non migliora da {max_patience} validation ({best_ppl:.2f})")
                 print(f"{'='*50}\n")
                 early_stopped = True
                 log_metrics({"train/early_stopped_at": global_step}, global_step, wandb_active)

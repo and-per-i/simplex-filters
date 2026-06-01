@@ -604,7 +604,9 @@ def main():
         run_finetuning(args, output_subdir="trilinear")
 
         # FASE 1b: Analisi + benchmark + test trilineare
-        ckpt_path = os.path.join(os.path.dirname(args.finetune_config), "trilinear", "final")
+        # run_finetuning salva in `./trilinear/final/` (config.checkpoint_dir="./checkpoints"
+        # → os.path.dirname("./checkpoints") = ".", poi os.path.join(".", "trilinear") = "./trilinear")
+        ckpt_path = os.path.abspath(os.path.join(".", "trilinear", "final"))
         run_analysis(ckpt_path, verbose=args.verbose)
         run_test_checkpoint(ckpt_path, "trilinear", verbose=args.verbose)
         free_gpu_memory()
@@ -617,7 +619,7 @@ def main():
         run_finetuning(args, output_subdir="gram_det")
 
         # FASE 2b: Analisi + benchmark + test Gram Det
-        ckpt_path_gd = os.path.join(os.path.dirname(args.finetune_config), "gram_det", "final")
+        ckpt_path_gd = os.path.abspath(os.path.join(".", "gram_det", "final"))
         run_analysis(ckpt_path_gd, verbose=args.verbose)
         run_test_checkpoint(ckpt_path_gd, "gram_det", verbose=args.verbose)
         free_gpu_memory()
