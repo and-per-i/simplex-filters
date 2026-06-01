@@ -341,14 +341,17 @@ def run_analysis(checkpoint_path: str, verbose: bool = False):
     """
     from src.geometry.analyzer import analyze_checkpoint, summarize_results
 
+    # Converti path relativo in assoluto (from_pretrained rifiuta path relativi)
+    abs_path = os.path.abspath(checkpoint_path)
+
     print(f"\n{BOLD}{'=' * 60}{NC}")
     print(f"{BOLD}  ANALISI GEOMETRICA{NC}")
-    print(f"{BOLD}  Checkpoint: {checkpoint_path}{NC}")
+    print(f"{BOLD}  Checkpoint: {abs_path}{NC}")
     print(f"{BOLD}{'=' * 60}{NC}\n")
 
     try:
         results = analyze_checkpoint(
-            checkpoint_path=checkpoint_path,
+            checkpoint_path=abs_path,
             attention_type="simplicial",
             num_analysis_batches=5,
             seq_length=256,
@@ -378,12 +381,15 @@ def run_test_checkpoint(checkpoint_path: str, attention_type: str, verbose: bool
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from src.modeling.convert_to_hybrid import convert_llama_to_hybrid, freeze_parameters
 
+    # Converti path relativo in assoluto (from_pretrained rifiuta path relativi)
+    abs_path = os.path.abspath(checkpoint_path)
+
     print(f"\n{BOLD}{'=' * 60}{NC}")
-    print(f"{BOLD}  TEST SU CHECKPOINT: {checkpoint_path}{NC}")
+    print(f"{BOLD}  TEST SU CHECKPOINT: {abs_path}{NC}")
     print(f"{BOLD}{'=' * 60}{NC}\n")
 
     model = AutoModelForCausalLM.from_pretrained(
-        checkpoint_path,
+        abs_path,
         torch_dtype=torch.bfloat16,
         device_map="auto",
         attn_implementation="eager",

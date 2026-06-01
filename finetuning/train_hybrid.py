@@ -40,7 +40,7 @@ from src.modeling.convert_to_hybrid import convert_llama_to_hybrid
 from transformers import AutoModelForCausalLM, AutoTokenizer, LlamaConfig
 from datasets import load_dataset
 
-from finetuning.utils.data import make_c4_train_loader, prepare_validation_batch
+from finetuning.utils.data import make_c4_train_loader, prepare_validation_batch, prepare_c4_validation_batch
 from finetuning.utils.optimizer import create_optimizer_groups
 from finetuning.utils.metrics import evaluate_validation
 from finetuning.utils.wandb_utils import init_wandb, log_metrics, finish_wandb
@@ -153,15 +153,18 @@ def train(config: dict):
     tokenizer.pad_token = tokenizer.eos_token
     print("  Tokenizer OK")
 
-    # --- Baseline perplexity (per early stopping) ---
-    print(f"\n[2/5] Baseline PPL: {LLAMA_BASELINE_PPL} (Wikitext-2, seq_len=512)")
-    val_batch = prepare_validation_batch(
+    # --- Batch di validazione su C4 (stesso dominio del training) ---
+    print(f"\n[2/5] Batch di validazione su C4 ({config['val_samples']} campioni)...")
+    val_batch_c4 = prepare_c4_validation_batch(
         tokenizer,
         seq_length=config["seq_length"],
         num_samples=config["val_samples"],
         device=device,
     )
-    print(f"  Batch di validazione: {val_batch['input_ids'].shape}")
+    print(f"  Batch C4: {val_batch_c4['input_ids'].shape}")
+
+    # Baseline Wikitext-2 solo per benchmark finale (non per early stopping)
+    print(f"  Baseline LLaMA su Wikitext-2: PPL ~{LLAMA_BASELINE_PPL}")
 
     # --- Converti in ibrido ---
     print(f"\n[3/5] Conversione in ibrido ({config['attention_type']})...")
@@ -271,7 +274,8 @@ def train(config: dict):
             print(f"  Validazione a step {global_step}")
             print(f"{'─'*50}")
 
-            val_metrics = evaluate_validation(model, val_batch, config["simplicial_indices"])
+            # Validazione su C4 (stesso dominio del training)
+            val_metrics = evaluate_validation(model, val_batch_c4, config["simplicial_indices"])
             log_metrics(val_metrics, global_step, wandb_active)
 
             ppl = val_metrics["val/perplexity"]

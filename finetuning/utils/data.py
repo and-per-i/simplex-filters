@@ -106,6 +106,57 @@ def make_wikitext_val_loader(
     return ConstantLengthDataset(tokenizer, dataset, seq_length=seq_length)
 
 
+def prepare_c4_validation_batch(
+    tokenizer,
+    seq_length=512,
+    num_samples=500,
+    device="cuda",
+):
+    """
+    Prepara un batch fisso di validazione da C4 (stesso dominio del training).
+    
+    Usa il validation split di C4, campionando N testi mai visti durante il training.
+    Questo batch viene usato per l'early stopping e il monitoraggio durante il training.
+    
+    Args:
+        tokenizer: tokenizer
+        seq_length: lunghezza sequenza
+        num_samples: numero di campioni
+        device: device
+
+    Returns:
+        dict con input_ids, labels, attention_mask come tensori [N, S]
+    """
+    dataset = load_dataset("allenai/c4", "en", split="validation", streaming=True)
+    dataset = dataset.take(num_samples * 2)
+
+    all_input_ids = []
+    all_labels = []
+
+    for example in dataset:
+        text = example.get("text", "")
+        if not text.strip():
+            continue
+        tokens = tokenizer.encode(text, add_special_tokens=False, truncation=True, max_length=seq_length + 1)
+        if len(tokens) < seq_length + 1:
+            continue
+        all_input_ids.append(tokens[:seq_length])
+        all_labels.append(tokens[1:seq_length + 1])
+
+        if len(all_input_ids) >= num_samples:
+            break
+
+    if not all_input_ids:
+        all_input_ids = [[0] * seq_length]
+        all_labels = [[0] * seq_length]
+
+    return {
+        "input_ids": torch.tensor(all_input_ids[:num_samples], dtype=torch.long, device=device),
+        "labels": torch.tensor(all_labels[:num_samples], dtype=torch.long, device=device),
+        "attention_mask": torch.ones(num_samples, seq_length, dtype=torch.long, device=device),
+    }
+
+
 def prepare_validation_batch(
     tokenizer,
     seq_length=512,
@@ -114,7 +165,7 @@ def prepare_validation_batch(
 ):
     """
     Prepara un batch fisso di validazione da Wikitext-2.
-    Usato per valutazione periodica durante il training.
+    Usato per benchmark finale DOPO il training.
 
     Args:
         tokenizer: tokenizer
