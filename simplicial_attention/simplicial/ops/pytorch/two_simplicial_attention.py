@@ -15,13 +15,21 @@ import math
 import torch
 import torch.nn.functional as F
 
-# Tentativo di importare i kernel Triton; se fallisce si usa il fallback PyTorch
+# Tentativo di importare i kernel Triton (solo su H100)
 try:
     from simplicial.ops.triton.bwd import triton_bwd
     from simplicial.ops.triton.fwd import triton_fwd
-    _USE_TRITON = True
+    _TRITON_AVAILABLE = True
 except (ImportError, RuntimeError):
-    _USE_TRITON = False
+    _TRITON_AVAILABLE = False
+
+# Triton TLX funziona solo su GPU Hopper (H100). Non ha architetture CUDA
+# per compute capability < 9.0 (es. RTX 4090, A100). Su altre GPU si usa PyTorch.
+_USE_TRITON = (
+    _TRITON_AVAILABLE
+    and torch.cuda.is_available()
+    and "H100" in torch.cuda.get_device_name(0)
+)
 
 
 class SimplicialAttention(torch.nn.Module):
@@ -69,37 +77,48 @@ class SimplicialAttention(torch.nn.Module):
 
 def _torch_2simplicial_fwd(xq, xk1, xk2, xv1, xv2, w1, w2):
     """
-    Pure PyTorch forward di attenzione 2-simpliciale.
-    Usato come fallback se il kernel Triton non e' disponibile.
+    Pure PyTorch forward di attenzione 2-simpliciale — memory efficient.
+
+    Invece di materializzare il tensore S×S×S (8.6 GB a S=512),
+    itera per ogni posizione query e calcola solo la finestra locale.
+
+    Complessità: O(B * H * S * w1 * w2 * D) invece di O(B * H * S³ * D)
+    Memoria:    O(B * H * S * w1 * w2) invece di O(B * H * S³)
     """
-    # x*: [B, S, H, D]
-    import math
     B, S, H, D = xq.shape
     sm_scale = 1.0 / math.sqrt(D)
-    device = xq.device
-    
-    # logits: [B, H, S, S, S] = einsum('btkh,bskh,brkh->bhtsr', q, k1, k2)
-    logits = torch.einsum("btkh,bskh,brkh->bhtsr", xq, xk1, xk2) * sm_scale
-    
-    # Maschera sliding window
-    if w1 > 0 and w2 > 0:
-        q_idx = torch.arange(S, device=device)
-        kv1_idx = torch.arange(S, device=device)
-        kv2_idx = torch.arange(S, device=device)
-        kv1_mask = ((q_idx[:, None] - w1) < kv1_idx[None, :]) & (kv1_idx[None, :] <= q_idx[:, None])
-        kv2_mask = ((q_idx[:, None, None] - w2) < kv2_idx[None, None, :]) & (kv2_idx[None, None, :] <= q_idx[:, None, None])
-        local_mask = kv1_mask[:, None, None, :, None] & kv2_mask[:, None, None, None, :]
-        logits = torch.where(local_mask, logits, -float("inf"))
-    
-    # Softmax su [S, S] per ogni query
-    shape = logits.shape  # [B, H, S, S, S]
-    logits_flat = logits.reshape(B, H, S, -1)
-    attn = F.softmax(logits_flat, dim=-1).reshape(shape)
-    
-    # output: [B, S, H, D] = einsum('bhtsr,bskh,brkh->btkh', attn, v1, v2)
-    output = torch.einsum("bhtsr,bskh,brkh->btkh", attn, xv1, xv2)
-    
-    return output, attn
+    output = torch.zeros(B, S, H, D, device=xq.device, dtype=xq.dtype)
+
+    for i in range(S):
+        # Sliding window: chiavi visibili dalla posizione i
+        j_start = max(0, i - w1) if w1 > 0 else 0
+        j_end = i + 1 if w1 > 0 else S
+        k_start = max(0, i - w2) if w2 > 0 else 0
+        k_end = i + 1 if w2 > 0 else S
+
+        # Estrai viste della finestra per questa query
+        k1_window = xk1[:, j_start:j_end, :, :]  # [B, w1, H, D]
+        k2_window = xk2[:, k_start:k_end, :, :]  # [B, w2, H, D]
+        v1_window = xv1[:, j_start:j_end, :, :]  # [B, w1, H, D]
+        v2_window = xv2[:, k_start:k_end, :, :]  # [B, w2, H, D]
+
+        # q_i: [B, 1, H, D] → squeeze → [B, H, D]
+        q_i = xq[:, i:i+1, :, :]  # [B, 1, H, D]
+
+        # logits: [B, H, 1, w1, w2]
+        logits = torch.einsum("bthd,bshd,brhd->bh tsr", q_i, k1_window, k2_window) * sm_scale
+        logits = logits.squeeze(2)  # [B, H, w1, w2]
+
+        # Softmax su [w1, w2]
+        shape = logits.shape  # [B, H, w1, w2]
+        logits_flat = logits.reshape(B, H, -1)
+        attn = F.softmax(logits_flat, dim=-1).reshape(shape)
+
+        # output_i: [B, H, 1, D] = einsum('bhjk,bjd,bkd->bhd', attn, v1, v2)
+        output_i = torch.einsum("bhjk,bjd,bkd->bhd", attn, v1_window, v2_window)
+        output[:, i, :, :] = output_i
+
+    return output, None
 
 
 class SimplicialAttentionFunction(torch.autograd.Function):
@@ -124,13 +143,14 @@ class SimplicialAttentionFunction(torch.autograd.Function):
                 return output
             except Exception:
                 pass  # fallback a PyTorch
-        
-        # Fallback PyTorch
-        output, attn = _torch_2simplicial_fwd(xq, xk1, xk2, xv1, xv2, w1, w2)
+
+        # Fallback PyTorch memory-efficient
+        output, _ = _torch_2simplicial_fwd(xq, xk1, xk2, xv1, xv2, w1, w2)
         ctx.use_triton = False
-        ctx.save_for_backward(xq, xk1, xk2, xv1, xv2, attn)
+        ctx.save_for_backward(xq, xk1, xk2, xv1, xv2)
         ctx.w1 = w1
         ctx.w2 = w2
+        ctx.sm_scale = 1.0 / math.sqrt(xq.shape[-1])
         return output
 
     @staticmethod
@@ -141,27 +161,55 @@ class SimplicialAttentionFunction(torch.autograd.Function):
                 q, k1, k2, v1, v2, ctx.w1, ctx.w2, output, grad_output, max_plus_lse,
             )
             return dq, dk1, dk2, dv1, dv2, None, None
-        
-        # Fallback PyTorch backward via autograd
-        q, k1, k2, v1, v2, attn = ctx.saved_tensors
-        
-        # dv1: [B, S, H, D]
-        dv1 = torch.einsum("bhtsr,btkh,brkh->bskh", attn, grad_output, v2)
-        dv2 = torch.einsum("bhtsr,btkh,bskh->brkh", attn, grad_output, v1)
-        
-        # dp: gradiente rispetto ai logits
-        dp = torch.einsum("btkh,bskh,brkh->bhtsr", grad_output, v1, v2)
-        B, H, S, _, _ = dp.shape
-        dp_flat = dp.reshape(B, H, S, -1)
-        attn_flat = attn.reshape(B, H, S, -1)
-        ds_flat = attn_flat * (dp_flat - (attn_flat * dp_flat).sum(dim=-1, keepdim=True))
-        ds = ds_flat.reshape(*attn.shape)
-        
-        sm_scale = 1.0 / math.sqrt(q.shape[-1])
-        dq = torch.einsum("bhtsr,bskh,brkh->btkh", ds, k1, k2) * sm_scale
-        dk1 = torch.einsum("bhtsr,btkh,brkh->bskh", ds, q, k2) * sm_scale
-        dk2 = torch.einsum("bhtsr,btkh,bskh->brkh", ds, q, k1) * sm_scale
-        
+
+        # Fallback PyTorch backward
+        q, k1, k2, v1, v2 = ctx.saved_tensors
+        B, S, H, D = q.shape
+        sm_scale = ctx.sm_scale
+        w1, w2 = ctx.w1, ctx.w2
+
+        dq = torch.zeros_like(q)
+        dk1 = torch.zeros_like(k1)
+        dk2 = torch.zeros_like(k2)
+        dv1 = torch.zeros_like(v1)
+        dv2 = torch.zeros_like(v2)
+
+        for i in range(S):
+            j_start = max(0, i - w1) if w1 > 0 else 0
+            j_end = i + 1 if w1 > 0 else S
+            k_start = max(0, i - w2) if w2 > 0 else 0
+            k_end = i + 1 if w2 > 0 else S
+
+            q_i = q[:, i:i+1, :, :]  # [B, 1, H, D]
+            k1_w = k1[:, j_start:j_end, :, :]
+            k2_w = k2[:, k_start:k_end, :, :]
+            v1_w = v1[:, j_start:j_end, :, :]
+            v2_w = v2[:, k_start:k_end, :, :]
+            dO_i = grad_output[:, i:i+1, :, :]
+
+            # Recompute logits e attn per questa posizione
+            logits = torch.einsum("bthd,bshd,brhd->bh tsr", q_i, k1_w, k2_w) * sm_scale
+            logits = logits.squeeze(2)  # [B, H, w1, w2]
+            shape = logits.shape
+            logits_flat = logits.reshape(B, H, -1)
+            attn = F.softmax(logits_flat, dim=-1).reshape(shape)
+
+            # dv1, dv2 per questa posizione
+            dv1[:, j_start:j_end, :, :] += torch.einsum("bhjk,btkh,brkh->bskh", attn, dO_i, v2_w)
+            dv2[:, k_start:k_end, :, :] += torch.einsum("bhjk,btkh,bskh->brkh", attn, dO_i, v1_w)
+
+            # dp: gradiente rispetto ai logits
+            dp = torch.einsum("btkh,bskh,brkh->bhjk", dO_i, v1_w, v2_w)
+            dp_flat = dp.reshape(B, H, -1)
+            attn_flat = attn.reshape(B, H, -1)
+            ds_flat = attn_flat * (dp_flat - (attn_flat * dp_flat).sum(dim=-1, keepdim=True))
+            ds = ds_flat.reshape(*attn.shape)
+
+            # dq, dk1, dk2
+            dq[:, i, :, :] += torch.einsum("bhjk,bshd,brhd->bhd", ds, k1_w, k2_w) * sm_scale
+            dk1[:, j_start:j_end, :, :] += torch.einsum("bhjk,bthd,brhd->bshd", ds, q_i, k2_w) * sm_scale
+            dk2[:, k_start:k_end, :, :] += torch.einsum("bhjk,bthd,bshd->brhd", ds, q_i, k1_w) * sm_scale
+
         return dq, dk1, dk2, dv1, dv2, None, None
 
 
@@ -409,10 +457,6 @@ def torch_simplicial_bwd(
     ds = ds.reshape(shape)  # [b, k, t, s, r]
 
     if variant == "strassen":
-        # qsk1 + qsk2 + k1k2
-        # dq = sk1 + sk2
-        # dk1 = qs + k2
-        # dk2 = qs + k1
         k1_plus_k2 = k1[:, :, None, :, :] + k2[:, None, :, :, :]
         q_plus_k2 = q[:, :, None, :, :] * softmax_scale + k2[:, None, :, :, :]
         q_plus_k1 = q[:, :, None, :, :] * softmax_scale + k1[:, None, :, :, :]
@@ -420,7 +464,6 @@ def torch_simplicial_bwd(
         dk1 = torch.einsum("bktsr,btrkh->bskh", ds, q_plus_k2)
         dk2 = torch.einsum("bktsr,btskh->brkh", ds, q_plus_k1)
     elif variant == "rank1":
-        # qk1 + qk2
         k1_plus_k2 = k1[:, :, None, :, :] + k2[:, None, :, :, :]
         dq = torch.einsum("bktsr,bsrkh->btkh", ds, k1_plus_k2) * softmax_scale
         dk1 = torch.einsum("bktsr,btkh->bskh", ds, q * softmax_scale)
