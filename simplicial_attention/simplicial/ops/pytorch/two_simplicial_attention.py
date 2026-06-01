@@ -114,8 +114,8 @@ def _torch_2simplicial_fwd(xq, xk1, xk2, xv1, xv2, w1, w2):
         logits_flat = logits.reshape(B, H, -1)
         attn = F.softmax(logits_flat, dim=-1).reshape(shape)
 
-        # output_i: [B, H, 1, D] = einsum('bhjk,bjd,bkd->bhd', attn, v1, v2)
-        output_i = torch.einsum("bhjk,bjd,bkd->bhd", attn, v1_window, v2_window)
+        # output_i: [B, H, D] = einsum('bhjk,bjhd,bkhd->bhd', attn, v1, v2)
+        output_i = torch.einsum("bhjk,bjhd,bkhd->bhd", attn, v1_window, v2_window)
         output[:, i, :, :] = output_i
 
     return output, None
