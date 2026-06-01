@@ -120,9 +120,9 @@ class SimplicialAttention(LlamaAttention):
             # K2 viene ruotato come K1 (stessa posizione relativa)
             _, key2_states = apply_rotary_pos_emb(query_states, key2_states, cos, sin)
         
-        # 3. KV cache non supportata (per ora)
-        if past_key_values is not None:
-            raise NotImplementedError("KV cache non ancora supportata per SimplicialAttention")
+        # 3. KV cache non supportata (ignorata, transformers la passa sempre)
+        # transformers v5+ passa past_key_value=... in forward anche senza cache
+        # Basta ignorarlo: il kernel 2-simplicial calcola tutto da zero
         
         # 4. Trasponi per il kernel Triton: [B, H, S, D] → [B, S, H, D]
         B, H, S, D = query_states.shape
