@@ -2,12 +2,13 @@
 # eval_pipeline.sh — Valutazione completa su checkpoint gia' addestrati
 #
 # Per ogni checkpoint, esegue:
+#   0. Baseline C4 (calcola PPL LLaMA base su C4 per confronto equo)
 #   1. Analisi geometrica
 #   2. Benchmark eviction (perplexity vs budget)
 #   3. RULER NIAH
-#   4. Test strutturali
 #
 # Usage:
+#   bash scripts/eval_pipeline.sh ./checkpoints/final
 #   bash scripts/eval_pipeline.sh ./checkpoints/trilinear/final ./checkpoints/gram_det/final
 
 set -euo pipefail
@@ -18,9 +19,11 @@ cd "$PROJECT_DIR"
 
 if [ $# -eq 0 ]; then
     echo "Usage: $0 <checkpoint1> [checkpoint2 ...]"
-    echo "       bash scripts/eval_pipeline.sh ./checkpoints/trilinear/final"
+    echo "       bash scripts/eval_pipeline.sh ./checkpoints/final"
     exit 1
 fi
+
+ATT_TYPE="${ATT_TYPE:-simplicial}"
 
 for CKPT in "$@"; do
     if [ ! -d "$CKPT" ]; then
@@ -33,8 +36,6 @@ for CKPT in "$@"; do
         ATT_TYPE="simplicial"
     elif echo "$CKPT" | grep -q "gram_det"; then
         ATT_TYPE="gram_det"
-    else
-        ATT_TYPE="simplicial"
     fi
 
     echo ""
@@ -45,7 +46,7 @@ for CKPT in "$@"; do
     python main.py --analyze "$CKPT"
     python main.py --benchmark "$CKPT" --attention-type "$ATT_TYPE"
     python main.py --ruler "$CKPT" --attention-type "$ATT_TYPE"
-    python main.py --test-model "$CKPT" --attention-type "$ATT_TYPE" --verbose
+
 done
 
 echo ""

@@ -35,6 +35,11 @@ class SimplicialAttention(LlamaAttention):
         attn = softmax(logits, dim=[j, k])
         out[i,h] = sum_jk attn_ijk * V1[j,h] * V2[k,h]
     
+    Supporta eviction KV cache via Q-filter score:
+    - Imposta self.eviction_params prima del forward per attivarla
+    - I parametri includono sigma1, sigma2, U_mean, budget, strategy
+    - Le chiavi con score piu' basso vengono azzerate
+    
     Args:
         config: LlamaConfig
         layer_idx: indice del layer
@@ -51,6 +56,9 @@ class SimplicialAttention(LlamaAttention):
         self.w2 = w2
         self.num_heads = config.num_attention_heads  # 32
         self.head_dim = config.hidden_size // config.num_attention_heads  # 128
+        
+        # Parametri eviction (impostati dall'esterno per il benchmark)
+        self.eviction_params = None  # dict con sigma1, sigma2, U_mean, budget, strategy
         
         # Sostituisci k_proj con k1_proj (32 teste invece di 8)
         self.k1_proj = nn.Linear(
@@ -76,7 +84,7 @@ class SimplicialAttention(LlamaAttention):
             bias=config.attention_bias
         )
         
-        # Rimuovi i riferimenti alle proiezioni originali (non più usate)
+        # Rimuovi i riferimenti alle proiezioni originali (non piu' usate)
         del self.k_proj
         del self.v_proj
     
@@ -131,6 +139,56 @@ class SimplicialAttention(LlamaAttention):
         k2 = key2_states.transpose(1, 2).contiguous()     # [B, S, H, D]
         v1 = value1_states.transpose(1, 2).contiguous()   # [B, S, H, D]
         v2 = value2_states.transpose(1, 2).contiguous()   # [B, S, H, D]
+        
+        # ================================================================
+        # EVICTION Q-FILTER (opzionale, solo se self.eviction_params e' impostato)
+        # ================================================================
+        # Le chiavi K1 e K2 con score Q-filter basso vengono azzerate,
+        # quindi non contribuiscono ai logits trilineari Q·K1·K2.
+        # I valori V1/V2 corrispondenti vengono azzerati allo stesso modo.
+        if self.eviction_params is not None:
+            params = self.eviction_params
+            sigma1 = params["sigma1"]
+            sigma2 = params["sigma2"]
+            U_mean = params["U_mean"]  # [d, 2]
+            budget = params["budget"]
+            strategy = params["strategy"]
+            
+            # Calcola score Q-filter per ogni posizione in K1
+            # k1: [B, S, H, D] → prendiamo tutte le head
+            # Per ogni head calcoliamo score separatamente (U_mean e' per tutte le head)
+            with torch.no_grad():
+                # k1_norm = k1 / (k1.norm(dim=-1, keepdim=True) + 1e-10)
+                for b in range(B):
+                    # k1_b: [S, H, D] — per ogni head, calcola score
+                    k1_b = k1[b]  # [S, H, D]
+                    k1_flat = k1_b.reshape(-1, D)  # [S*H, D]
+                    
+                    # Q-filter score
+                    k_proj = k1_flat @ U_mean  # [S*H, 2]
+                    k_e1 = k_proj[:, 0]
+                    k_e2 = k_proj[:, 1]
+                    scores = torch.sqrt(sigma1**2 * k_e2**2 + sigma2**2 * k_e1**2)
+                    
+                    if strategy == "random":
+                        N_scores = scores.shape[0]
+                        B_keep = max(1, int(N_scores * budget))
+                        keep_indices = torch.randperm(N_scores, device=scores.device)[:B_keep]
+                    else:  # "qfilter"
+                        N_scores = scores.shape[0]
+                        B_keep = max(1, int(N_scores * budget))
+                        keep_indices = torch.argsort(scores, descending=True)[:B_keep]
+                    
+                    # Crea maschera: 1 per chiavi tenute, 0 per eliminate
+                    mask = torch.zeros(S * H, 1, device=k1.device, dtype=k1.dtype)
+                    mask[keep_indices] = 1.0
+                    mask = mask.reshape(S, H, 1)  # [S, H, 1]
+                    
+                    # Applica maschera a K1, V1, K2, V2
+                    k1[b] = k1[b] * mask
+                    v1[b] = v1[b] * mask
+                    k2[b] = k2[b] * mask
+                    v2[b] = v2[b] * mask
         
         # 5. Kernel 2-simplicial tramite custom autograd Function
         attn_output = SimplicialAttentionFunction.apply(q, k1, k2, v1, v2, self.w1, self.w2)

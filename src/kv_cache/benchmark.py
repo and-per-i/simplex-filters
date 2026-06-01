@@ -43,6 +43,31 @@ class BenchmarkResult:
         return "\n".join(lines)
 
 
+def _set_model_eviction(model, simplicial_indices, sigma1, sigma2, U_mean, budget, strategy, attention_type):
+    """Imposta eviction_params sui layer simpliciali del modello."""
+    if attention_type != "simplicial":
+        return  # GramDet non supporta eviction Q-filter
+    
+    for idx in simplicial_indices:
+        attn = model.model.layers[idx].self_attn
+        if hasattr(attn, "eviction_params"):
+            attn.eviction_params = {
+                "sigma1": sigma1,
+                "sigma2": sigma2,
+                "U_mean": U_mean,
+                "budget": budget,
+                "strategy": strategy,
+            }
+
+
+def _clear_model_eviction(model, simplicial_indices):
+    """Rimuove eviction_params dai layer simpliciali."""
+    for idx in simplicial_indices:
+        attn = model.model.layers[idx].self_attn
+        if hasattr(attn, "eviction_params"):
+            attn.eviction_params = None
+
+
 def benchmark_checkpoint(
     checkpoint_path: str,
     attention_type: str = "simplicial",
@@ -76,6 +101,8 @@ def benchmark_checkpoint(
     """
     if budgets is None:
         budgets = [1.0, 0.5, 0.3, 0.1]
+    
+    simplicial_indices = [16, 20, 24, 28]
 
     from datasets import load_dataset
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -107,7 +134,8 @@ def benchmark_checkpoint(
         verbose=True,
     )
 
-    # Prendi il primo layer per ora (o media tra i layer)
+    # Prendi il primo layer (16) per ora — tutti i layer simpliciali
+    # hanno parametri geometrici simili
     layer_idx = 16
     if layer_idx in geo_results:
         layer_data = geo_results[layer_idx]
@@ -117,7 +145,6 @@ def benchmark_checkpoint(
     else:
         print(f"Layer {layer_idx} non trovato, uso valori di default")
         sigma1, sigma2 = 1.0, 1.0
-        import torch
         U_mean = torch.eye(128, device=device)[:, :2]
 
     result = BenchmarkResult(model_name=os.path.basename(checkpoint_path))
@@ -135,20 +162,24 @@ def benchmark_checkpoint(
         print(f"\n  Budget: {budget*100:.0f}%")
 
         # Q-filter eviction
+        _set_model_eviction(model, simplicial_indices, sigma1, sigma2, U_mean, budget, "qfilter", attention_type)
         ppl_qf = _eval_ppl_with_eviction(
             model, tokenizer, dataset, U_mean, sigma1, sigma2,
             budget=budget, strategy="qfilter",
             seq_length=seq_length, num_batches=num_batches, device=device,
         )
+        _clear_model_eviction(model, simplicial_indices)
         result.ppl_qfilter[budget] = ppl_qf
         print(f"    Q-filter PPL: {ppl_qf:.2f}")
 
         # Random eviction baseline
+        _set_model_eviction(model, simplicial_indices, sigma1, sigma2, U_mean, budget, "random", attention_type)
         ppl_rand = _eval_ppl_with_eviction(
             model, tokenizer, dataset, U_mean, sigma1, sigma2,
             budget=budget, strategy="random",
             seq_length=seq_length, num_batches=num_batches, device=device,
         )
+        _clear_model_eviction(model, simplicial_indices)
         result.ppl_random[budget] = ppl_rand
         print(f"    Random PPL:   {ppl_rand:.2f}")
 
