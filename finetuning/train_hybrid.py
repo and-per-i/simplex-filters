@@ -40,10 +40,10 @@ from src.modeling.convert_to_hybrid import convert_llama_to_hybrid
 from transformers import AutoModelForCausalLM, AutoTokenizer, LlamaConfig
 from datasets import load_dataset
 
-from utils.data import make_c4_train_loader, prepare_validation_batch
-from utils.optimizer import create_optimizer_groups
-from utils.metrics import evaluate_validation
-from utils.wandb_utils import init_wandb, log_metrics, finish_wandb
+from finetuning.utils.data import make_c4_train_loader, prepare_validation_batch
+from finetuning.utils.optimizer import create_optimizer_groups
+from finetuning.utils.metrics import evaluate_validation
+from finetuning.utils.wandb_utils import init_wandb, log_metrics, finish_wandb
 
 
 # ==========================================================================
