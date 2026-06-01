@@ -127,8 +127,10 @@ def prepare_c4_validation_batch(
     Returns:
         dict con input_ids, labels, attention_mask come tensori [N, S]
     """
+    # Shuffle deterministico con seed 42: stesso subset di documenti ad ogni validation step
+    # (se non shufassimo, lo streaming produrrebbe ordine diverso ogni volta → curve WandB non confrontabili)
     dataset = load_dataset("allenai/c4", "en", split="validation", streaming=True)
-    dataset = dataset.take(num_samples * 2)
+    dataset = dataset.shuffle(seed=42, buffer_size=10000).take(num_samples * 2)
 
     all_input_ids = []
     all_labels = []
