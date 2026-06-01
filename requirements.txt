@@ -5,6 +5,7 @@
 # Core
 torch>=2.4.0
 transformers>=4.43.0
+accelerate>=0.30.0
 datasets>=2.18.0
 huggingface_hub>=0.23.0
 pyyaml>=6.0
