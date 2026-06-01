@@ -47,7 +47,7 @@ def expand_kv_weight(kv_weight: torch.Tensor, num_repeats: int = 4) -> torch.Ten
     kv_head_dim = kv_weight.shape[1]  # num_kv_heads * head_dim
     num_kv_heads = kv_head_dim // (kv_head_dim // num_repeats)
     
-    weight_expanded = kv_weight.repeat(1, num_repeats)
+    weight_expanded = kv_weight.repeat(num_repeats, 1)
     # [hidden_size, num_kv_heads * head_dim * num_repeats]
     # = [hidden_size, num_heads * head_dim]
     
