@@ -81,14 +81,8 @@ pip install -e simplicial_attention/ 2>&1 | tail -3
 echo "  0b. Login WandB..."
 wandb login "$WANDB_API_KEY" 2>/dev/null || echo "  [WARN] wandb login fallito, continuo..."
 
-echo "  0c. Clonazione Triton TLX (kernel FBGEMM)..."
-if [ ! -d "triton" ]; then
-    git clone -b tlx https://github.com/facebookexperimental/triton.git 2>&1 | tail -3
-    cd triton && pip install -e . --no-build-isolation 2>&1 | tail -3 && cd ..
-    echo "  Triton TLX installato"
-else
-    echo "  Triton TLX gia' presente"
-fi
+echo "  0c. Triton TLX: saltato (non compatibile con RTX 4090/CC<9.0)"
+echo "      Il kernel 2-simplicial usa PyTorch fallback, funziona uguale."
 
 echo "  0d. Verifica GPU..."
 python3 -c "import torch; print(f'  GPU: {torch.cuda.get_device_name(0)}, Mem: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB')"

@@ -469,6 +469,58 @@ def run_llama_base_baseline():
 # Step 7: Finetuning
 # ==========================================================================
 
+def compute_c4_baseline_early(tokenizer, seq_length=512, num_samples=100, device="cuda"):
+    """
+    Calcola PPL di LLaMA base su C4 PRIMA di caricare il modello ibrido.
+    Processa il batch in mini-chunk per evitare OOM dal logits [B, 512, 128000].
+    """
+    import math, gc
+    from transformers import AutoModelForCausalLM
+    from finetuning.utils.data import prepare_c4_validation_batch
+
+    print(f"\n  Calcolo baseline C4 ({num_samples} campioni, modello LLaMA base)...")
+    hf_token = os.environ.get("HF_TOKEN")
+    model = AutoModelForCausalLM.from_pretrained(
+        "meta-llama/Llama-3.1-8B",
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+        attn_implementation="eager",
+        token=hf_token,
+    )
+    model.eval()
+
+    val_batch = prepare_c4_validation_batch(
+        tokenizer, seq_length=seq_length, num_samples=num_samples, device=device,
+    )
+
+    # Processa in chunk da 25 per evitare OOM (logits [25, 512, 128000] ~ 3.4 GB)
+    chunk_size = 25
+    total_loss = 0.0
+    total_tokens = 0
+
+    for start in range(0, num_samples, chunk_size):
+        end = min(start + chunk_size, num_samples)
+        chunk_ids = val_batch["input_ids"][start:end]
+        
+        with torch.no_grad():
+            outputs = model(chunk_ids, labels=chunk_ids)
+            loss = outputs.loss.item()
+
+        B_chunk = end - start
+        total_loss += loss * (seq_length - 1) * B_chunk
+        total_tokens += (seq_length - 1) * B_chunk
+
+    avg_loss = total_loss / max(total_tokens, 1)
+    ppl = math.exp(avg_loss)
+
+    del model
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    print(f"  Baseline LLaMA 3.1 8B su C4: {ppl:.2f} PPL")
+    return ppl
+
+
 def run_finetuning(args, output_subdir=None):
     """
     Esegue il finetuning del modello ibrido su C4.
@@ -510,6 +562,21 @@ def run_finetuning(args, output_subdir=None):
         config["checkpoint_dir"] = os.path.join(
             os.path.dirname(config["checkpoint_dir"]), output_subdir
         )
+
+    # Calcola baseline C4 PRIMA di caricare il modello ibrido (evita OOM)
+    # Serve solo il tokenizer, il modello LLaMA base viene liberato subito
+    tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.1-8B")
+    tokenizer.pad_token = tokenizer.eos_token
+
+    baseline_ppl = compute_c4_baseline_early(
+        tokenizer,
+        seq_length=config.get("seq_length", 512),
+        num_samples=min(config.get("val_samples", 500), 100),
+        device="cuda",
+    )
+
+    # Passa il baseline a train()
+    config["baseline_c4_ppl"] = baseline_ppl
 
     # Esegue training (carica modello, converte, freeze, dataset, loop)
     train(config)

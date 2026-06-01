@@ -19,14 +19,14 @@ val_dataset_config: "wikitext-2-raw-v1"
 val_samples: 500
 
 # Training
-max_steps: 3000
+max_steps: 10000
 per_device_batch_size: 1
-gradient_accumulation_steps: 8
+gradient_accumulation_steps: 16
 warmup_steps: 100
 
 # Learning rates
-lr_k2v2: 2.0e-4
-lr_k1v1: 2.0e-5
+lr_k2v2: 5.0e-4           # 2.5x rispetto a prima — K2/V2 partono da random noise, gradiente debole
+lr_k1v1: 2.0e-5           # invariato — pesi pretrained, non vogliamo romperli
 weight_decay: 0.01
 beta1: 0.9
 beta2: 0.95
@@ -37,13 +37,13 @@ val_every: 500
 save_every: 1000
 
 # Early stopping (validation su C4, non su Wikitext-2)
-# max_perplexity_gap: confronto con la baseline LLaMA su Wikitext-2 (benchmark finale)
+# max_perplexity_gap: confronto con la baseline LLaMA su C4 (calcolata a inizio training)
 # Durante il training, la PPL su C4 viene monitorata ma senza early stopping aggressivo
 max_perplexity_gap: 10.0
 
 # Weights & Biases
 wandb_project: "simplex-filters"
-wandb_run_name: "llama-simplicial-finetune"
+wandb_run_name: "llama-simplicial-finetune-v2"
 
 # Checkpoint
 checkpoint_dir: "./checkpoints"
