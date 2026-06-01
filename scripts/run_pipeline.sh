@@ -75,6 +75,9 @@ echo "=========================================="
 echo "  0a. Installazione requirements..."
 pip install -r requirements.txt 2>&1 | tail -3
 
+echo "  0a2. Installazione pacchetto simplicial (kernel FBGEMM)..."
+pip install -e simplicial_attention/ 2>&1 | tail -3
+
 echo "  0b. Login WandB..."
 wandb login "$WANDB_API_KEY" 2>/dev/null || echo "  [WARN] wandb login fallito, continuo..."
 
