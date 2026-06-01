@@ -194,21 +194,31 @@ class SimplicialAttentionFunction(torch.autograd.Function):
             logits_flat = logits.reshape(B, H, -1)
             attn = F.softmax(logits_flat, dim=-1).reshape(shape)
 
-            # dv1, dv2 per questa posizione
-            dv1[:, j_start:j_end, :, :] += torch.einsum("bhjk,btkh,brkh->bskh", attn, dO_i, v2_w)
-            dv2[:, k_start:k_end, :, :] += torch.einsum("bhjk,btkh,bskh->brkh", attn, dO_i, v1_w)
+            # Squeeza le dimensioni singole: [B, 1, H, D] → [B, H, D]
+            dO_i_sq = dO_i.squeeze(1)
+            q_i_sq = q_i.squeeze(1)  # [B, H, D]
 
-            # dp: gradiente rispetto ai logits
-            dp = torch.einsum("btkh,bskh,brkh->bhjk", dO_i, v1_w, v2_w)
+            # dv1[b, j, h, d] = Σ_k attn[b, h, j, k] · dO_i[b, h, d] · v2_w[b, k, h, d]
+            dv1[:, j_start:j_end, :, :] += torch.einsum("bhjk,bhd,bkhd->bjhd", attn, dO_i_sq, v2_w)
+
+            # dv2[b, k, h, d] = Σ_j attn[b, h, j, k] · dO_i[b, h, d] · v1_w[b, j, h, d]
+            dv2[:, k_start:k_end, :, :] += torch.einsum("bhjk,bhd,bjhd->bkhd", attn, dO_i_sq, v1_w)
+
+            # dp[b, h, j, k] = dO_i[b, h, d] · v1_w[b, j, h, d] · v2_w[b, k, h, d]
+            dp = torch.einsum("bhd,bjhd,bkhd->bhjk", dO_i_sq, v1_w, v2_w)
             dp_flat = dp.reshape(B, H, -1)
             attn_flat = attn.reshape(B, H, -1)
             ds_flat = attn_flat * (dp_flat - (attn_flat * dp_flat).sum(dim=-1, keepdim=True))
             ds = ds_flat.reshape(*attn.shape)
 
-            # dq, dk1, dk2
-            dq[:, i, :, :] += torch.einsum("bhjk,bshd,brhd->bhd", ds, k1_w, k2_w) * sm_scale
-            dk1[:, j_start:j_end, :, :] += torch.einsum("bhjk,bthd,brhd->bshd", ds, q_i, k2_w) * sm_scale
-            dk2[:, k_start:k_end, :, :] += torch.einsum("bhjk,bthd,bshd->brhd", ds, q_i, k1_w) * sm_scale
+            # dq[b, h, d] = Σ_j Σ_k ds[b, h, j, k] · k1_w[b, j, h, d] · k2_w[b, k, h, d]
+            dq[:, i, :, :] += torch.einsum("bhjk,bjhd,bkhd->bhd", ds, k1_w, k2_w) * sm_scale
+
+            # dk1[b, j, h, d] = Σ_k ds[b, h, j, k] · q_i[b, h, d] · k2_w[b, k, h, d]
+            dk1[:, j_start:j_end, :, :] += torch.einsum("bhjk,bhd,bkhd->bjhd", ds, q_i_sq, k2_w) * sm_scale
+
+            # dk2[b, k, h, d] = Σ_j ds[b, h, j, k] · q_i[b, h, d] · k1_w[b, j, h, d]
+            dk2[:, k_start:k_end, :, :] += torch.einsum("bhjk,bhd,bjhd->bkhd", ds, q_i_sq, k1_w) * sm_scale
 
         return dq, dk1, dk2, dv1, dv2, None, None
 
