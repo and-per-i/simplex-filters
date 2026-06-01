@@ -71,7 +71,7 @@ def make_c4_train_loader(
     Returns:
         iterator su dict con input_ids, labels, attention_mask
     """
-    dataset = load_dataset("c4", "en", split="train", streaming=True)
+    dataset = load_dataset("allenai/c4", "en", split="train", streaming=True)
 
     if max_samples is not None:
         dataset = dataset.take(max_samples)
