@@ -83,12 +83,12 @@ def _init_gram_det_layer(layer, config, layer_idx, q_weight, k_weight_32, v_weig
         head_dim=config.hidden_size // config.num_attention_heads,
         window_size=w,
     )
-    # GramDet crea nn.Linear con dtype float32, ma i pesi LLaMA sono bfloat16
-    target_dtype = new_attn.q_proj.weight.dtype
-    new_attn.q_proj.weight.data = q_weight.to(target_dtype)
-    new_attn.k_proj.weight.data = k_weight_32.to(target_dtype)
-    new_attn.v_proj.weight.data = v_weight_32.to(target_dtype)
-    new_attn.o_proj.weight.data = o_weight.to(target_dtype)
+    # GramDet crea nn.Linear su CPU e float32, ma i pesi LLaMA sono su CUDA e bfloat16
+    # .to() gestisce sia device che dtype
+    new_attn.q_proj.weight.data = q_weight.to(dtype=torch.float32, device=q_weight.device)
+    new_attn.k_proj.weight.data = k_weight_32.to(dtype=torch.float32, device=q_weight.device)
+    new_attn.v_proj.weight.data = v_weight_32.to(dtype=torch.float32, device=q_weight.device)
+    new_attn.o_proj.weight.data = o_weight.to(dtype=torch.float32, device=q_weight.device)
     return new_attn
 
 
