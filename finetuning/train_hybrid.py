@@ -340,8 +340,12 @@ def train(config: dict):
             delta = ppl - LLAMA_BASELINE_PPL
 
             print(f"  PPL: {ppl:.2f} (baseline: {LLAMA_BASELINE_PPL}, delta: {delta:+.2f})")
-            print(f"  L2 K1/K2: {val_metrics.get('val/l2_k1k2_mean', 0):.6f}")
-            print(f"  L2 V1/V2: {val_metrics.get('val/l2_v1v2_mean', 0):.6f}")
+            k1k2 = val_metrics.get('val/l2_k1k2_mean', "N/A")
+            v1v2 = val_metrics.get('val/l2_v1v2_mean', "N/A")
+            l2_k1k2_str = f"{k1k2:.6f}" if isinstance(k1k2, float) else str(k1k2)
+            l2_v1v2_str = f"{v1v2:.6f}" if isinstance(v1v2, float) else str(v1v2)
+            print(f"  L2 K1/K2: {l2_k1k2_str}")
+            print(f"  L2 V1/V2: {l2_v1v2_str}")
 
             # Early stopping basato su patience: ferma se PPL non migliora per 3 validation consecutive
             if ppl >= best_ppl:
