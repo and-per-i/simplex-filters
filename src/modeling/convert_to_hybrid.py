@@ -83,9 +83,9 @@ def _init_gram_det_layer(layer, config, layer_idx, q_weight, k_weight_32, v_weig
         head_dim=config.hidden_size // config.num_attention_heads,
         window_size=w,
     )
-    # Sposta il layer sul device corretto (nn.Linear crea pesi su CPU)
-    new_attn.to(device=q_weight.device)
-    # copy_() gestisce dtype conversion automaticamente (float32 -> bfloat16)
+    # Converti tutto il layer in bfloat16 + CUDA (matcha il dtype del modello)
+    new_attn = new_attn.to(dtype=torch.bfloat16, device=q_weight.device)
+    # Ora copy_() e' tra tensori dello stesso dtype (bfloat16)
     new_attn.q_proj.weight.data.copy_(q_weight)
     new_attn.k_proj.weight.data.copy_(k_weight_32)
     new_attn.v_proj.weight.data.copy_(v_weight_32)
