@@ -487,6 +487,10 @@ def run_finetuning(args, output_subdir=None):
         args: namespace con tutti i parametri
         output_subdir: sottocartella per checkpoint (es. "trilinear", "gram_det")
     """
+    # Deriva sottocartella dal tipo di attenzione se non specificata
+    if output_subdir is None:
+        output_subdir = "gram_det" if args.attention_type == "gram_det" else "trilinear"
+    
     from finetuning.train_hybrid import train
     from finetuning.utils.optimizer import create_optimizer_groups
     from finetuning.utils.wandb_utils import init_wandb, finish_wandb
