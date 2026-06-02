@@ -331,13 +331,18 @@ def run_tests(levels, verbose=False, stop_on_failure=False, model_name="random",
 # Step 5: Analisi geometrica
 # ==========================================================================
 
-def run_analysis(checkpoint_path: str, verbose: bool = False):
+def run_analysis(checkpoint_path: str, verbose: bool = False, device: str = "cuda"):
     """
     Esegue l'analisi geometrica completa su un checkpoint addestrato.
     
     Carica il modello, estrae K1/K2/Q via hook su Wikitext-2,
     calcola: piano medio (Frechet), varianza geodesica, query media
     (Q-filters), relazione query-piano, anisotropia nel piano.
+    
+    Args:
+        checkpoint_path: path al checkpoint
+        verbose: output verboso
+        device: "cuda" o "cpu" — usa "cpu" quando la GPU e' occupata dal training
     """
     from src.geometry.analyzer import analyze_checkpoint, summarize_results
 
@@ -347,7 +352,11 @@ def run_analysis(checkpoint_path: str, verbose: bool = False):
     print(f"\n{BOLD}{'=' * 60}{NC}")
     print(f"{BOLD}  ANALISI GEOMETRICA{NC}")
     print(f"{BOLD}  Checkpoint: {abs_path}{NC}")
+    print(f"{BOLD}  Device: {device}{NC}")
     print(f"{BOLD}{'=' * 60}{NC}\n")
+
+    print(f"  {YELLOW}[INFO]{NC} L'analisi su CPU e' piu' lenta (~2-3 minuti invece di 30 secondi)")
+    print(f"  {YELLOW}[INFO]{NC} ma non compete per VRAM col training in corso.\n")
 
     try:
         results = analyze_checkpoint(
@@ -355,6 +364,7 @@ def run_analysis(checkpoint_path: str, verbose: bool = False):
             attention_type="simplicial",
             num_analysis_batches=5,
             seq_length=256,
+            device=device,
             verbose=verbose,
         )
         summarize_results(results)
