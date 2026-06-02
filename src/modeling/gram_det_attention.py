@@ -72,7 +72,7 @@ class GramDetAttention(nn.Module):
         self.register_buffer('pair_indices', pair_indices)
         self.num_pairs = pair_indices.shape[0]  # P
 
-        # Proiezioni
+        # Proiezioni (usa torch.get_default_dtype per compatibilità con pesi caricati)
         self.q_proj = nn.Linear(d_model, n_heads * self.head_dim, bias=False)
         self.k_proj = nn.Linear(d_model, n_heads * self.head_dim, bias=False)
         self.v_proj = nn.Linear(d_model, n_heads * self.head_dim, bias=False)
