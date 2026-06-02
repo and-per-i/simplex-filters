@@ -171,19 +171,6 @@ class GramDetAttention(nn.Module):
         qk2  = (q.unsqueeze(-2) * k2).sum(dim=-1)                     # [B, H, N, P]
         k1k2 = (k1 * k2).sum(dim=-1)                                  # [B, H, N, P]
 
-        # ========== DEBUG ==========
-        print(f"\n[GRAM_DET_DEBUG] N={N}, H={H}, d={d}, W={W}, P={self.num_pairs}")
-        print(f"  q.shape={q.shape}, k.shape={k.shape}")  # [B, H, N, d]
-        print(f"  k_pad.shape={k_pad.shape}")              # [B, H, N+2W, d]
-        print(f"  k_windows.shape={k_windows.shape}")      # [B, H, N, 2W+1, d]
-        print(f"  k1.shape={k1.shape}, k2.shape={k2.shape}")  # [B, H, N, P, d]
-        print(f"  qq.shape={qq.shape}")    # [B, H, N]
-        print(f"  k1k1.shape={k1k1.shape}, k2k2.shape={k2k2.shape}")  # [B, H, N, P]
-        print(f"  qk1.shape={qk1.shape}, qk2.shape={qk2.shape}")      # [B, H, N, P]
-        print(f"  k1k2.shape={k1k2.shape}")  # [B, H, N, P]
-        print(f"  qq.unsqueeze(-1).shape={qq.unsqueeze(-1).shape}")  # [B, H, N, 1]
-        print(f"  (k1k1 * k2k2 - k1k2.pow(2)).shape={(k1k1 * k2k2 - k1k2.pow(2)).shape}")  # [B, H, N, P]
-        # ============================
 
         # Sarrus: tutti [B, H, N, P]
         term1 = qq.unsqueeze(-1) * (k1k1 * k2k2 - k1k2.pow(2))
