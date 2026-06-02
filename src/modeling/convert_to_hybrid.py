@@ -204,9 +204,13 @@ def freeze_parameters(model, simplicial_indices, lr_k1v1=2e-5, lr_k2v2=2e-4, att
             continue
         
         if attention_type == "gram_det":
-            # GramDet → tutti i parametri sono trainable
-            param.requires_grad = True
-            gram_det_params.append(param)
+            # GramDet → solo i 4 proiettori sono trainable (q/k/v/o = 67M × 4 layer)
+            if "q_proj" in name or "k_proj" in name or "v_proj" in name or "o_proj" in name:
+                param.requires_grad = True
+                gram_det_params.append(param)
+            else:
+                param.requires_grad = False
+                frozen_params.append(param)
         else:
             if "k1_proj" in name or "v1_proj" in name:
                 param.requires_grad = True
