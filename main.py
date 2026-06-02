@@ -512,6 +512,8 @@ def run_finetuning(args, output_subdir=None):
     config["attention_type"] = args.attention_type
     config["alpha"] = args.alpha
     config["simplicial_indices"] = SIMPLICIAL_INDICES
+    if args.resume is not None:
+        config["resume_path"] = os.path.abspath(args.resume)
 
     # Checkpoint in sottocartella separata
     if output_subdir:
@@ -577,6 +579,8 @@ def main():
                         help="Override learning rate per K2/V2")
     parser.add_argument("--lr-k1v1", type=float, default=None,
                         help="Override learning rate per K1/V1")
+    parser.add_argument("--resume", type=str, default=None,
+                        help="Path a checkpoint da cui riprendere training")
 
     # Parametri test
     parser.add_argument("--level", type=int, nargs="+", default=[1, 2, 3],

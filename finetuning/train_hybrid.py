@@ -26,6 +26,7 @@ import os
 import sys
 import math
 import time
+import gc
 import glob
 import shutil
 import argparse
@@ -212,6 +213,57 @@ def train(config: dict):
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     # ======================================================================
+    # RESUME: Carica pesi + optimizer da checkpoint precedente
+    # ======================================================================
+    resume_path = config.get("resume_path", None)
+    resume_step = 0
+    if resume_path is not None:
+        from safetensors.torch import load_file as safetensors_load
+
+        print(f"\n  RESUME da {resume_path}...")
+        
+        # 1. Carica state_dict dal checkpoint
+        safetensor_files = glob.glob(os.path.join(resume_path, "*.safetensors"))
+        if not safetensor_files:
+            idx = os.path.join(resume_path, "model.safetensors.index.json")
+            if os.path.exists(idx):
+                import json
+                with open(idx) as f:
+                    ix = json.load(f)
+                safetensor_files = list(set(ix["weight_map"].values()))
+                safetensor_files = [os.path.join(resume_path, f) for f in safetensor_files]
+        
+        state_dict = {}
+        for sf in safetensor_files:
+            state_dict.update(safetensors_load(sf))
+        
+        # 2. Sovrascrivi SOLO i 16 pesi dei layer simpliciali
+        loaded = 0
+        for name, param in model.named_parameters():
+            if name in state_dict and any(f"layers.{i}." in name for i in config["simplicial_indices"]):
+                param.data.copy_(state_dict[name].to(param.device))
+                loaded += 1
+        
+        print(f"  Caricati {loaded} pesi simpliciali dal checkpoint.")
+        
+        # 3. Carica training_state.pt (optimizer, scheduler, step, best_ppl)
+        state_path = os.path.join(resume_path, "training_state.pt")
+        if os.path.exists(state_path):
+            training_state = torch.load(state_path, map_location=device)
+            optimizer.load_state_dict(training_state["optimizer"])
+            scheduler.load_state_dict(training_state["scheduler"])
+            resume_step = training_state["step"]
+            best_ppl = training_state.get("best_ppl", float('inf'))
+            print(f"  Riprendo da step {resume_step} (best PPL: {best_ppl:.2f})")
+        else:
+            resume_step = int(os.path.basename(resume_path).replace("checkpoint-", ""))
+            best_ppl = float('inf')
+            print(f"  Nessun training_state.pt, riprendo da step {resume_step}")
+        
+        del state_dict
+        gc.collect()
+
+    # ======================================================================
     # Training loop
     # ======================================================================
 
@@ -222,7 +274,7 @@ def train(config: dict):
     print(f"  LR K2/V2: {config['lr_k2v2']}, LR K1/V1: {config['lr_k1v1']}")
     print(f"{'='*60}\n")
 
-    global_step = 0
+    global_step = resume_step  # 0 se fresh, N se resume
     cumulative_loss = 0.0
     best_ppl = float('inf')
     early_stopped = False
@@ -366,6 +418,8 @@ def parse_args():
     parser.add_argument("--checkpoint-dir", type=str)
     parser.add_argument("--no-wandb", action="store_true",
                         help="Disabilita WandB")
+    parser.add_argument("--resume", type=str, default=None,
+                        help="Path a checkpoint da cui riprendere training")
     return parser.parse_args()
 
 
