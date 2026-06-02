@@ -13,9 +13,11 @@ Formula (Sarrus per Gram 3x3 simmetrica):
 """
 
 import math
+from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from transformers.models.llama.modeling_llama import LlamaAttention, apply_rotary_pos_emb
 
 
 def _build_pair_indices(W: int) -> torch.Tensor:
@@ -79,6 +81,35 @@ class GramDetAttention(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(
+        self,
+        hidden_states: torch.Tensor,
+        position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        past_key_values = None,
+        **kwargs,
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """
+        Forward con interfaccia compatibile con LlamaAttention.
+        
+        Chiama _forward_gram_det per il calcolo effettivo.
+        position_embeddings e causal_mask non sono usati (GramDet
+        usa finestra simmetrica, non causale — e il determinante
+        di Gram e' intrinsecamente invariante per rotazione).
+        
+        Args:
+            hidden_states: [B, N, d_model]
+            position_embeddings: ignorato
+            attention_mask: ignorato
+            past_key_values: ignorato
+            
+        Returns:
+            output: [B, N, d_model]
+            None: per compatibilità con LlamaDecoderLayer
+        """
+        output = self._forward_gram_det(hidden_states)
+        return output, None
+
+    def _forward_gram_det(
         self,
         x: torch.Tensor,
         return_weights: bool = False,
