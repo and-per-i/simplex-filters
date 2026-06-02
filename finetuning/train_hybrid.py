@@ -309,7 +309,7 @@ def train(config: dict):
             # Log training loss — cumulative_loss e' gia' divisa per GAS ad ogni micro-batch
             # avg_loss = cumulative_loss / GAS sarebbe una doppia divisione
             avg_loss = cumulative_loss
-            lr_k2v2 = optimizer.param_groups[2]["lr"] if len(optimizer.param_groups) > 2 else 0.0
+            lr_k2v2 = optimizer.param_groups[-1]["lr"] if len(optimizer.param_groups) > 2 else 0.0
 
             log_metrics({
                 "train/loss": avg_loss,
