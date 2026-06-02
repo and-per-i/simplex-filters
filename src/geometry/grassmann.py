@@ -178,24 +178,30 @@ def frechet_mean_queries(
 def query_plane_relation(
     q: torch.Tensor,
     U_plane: torch.Tensor,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Calcola la relazione tra un vettore query e un piano.
     
-    proj_norm = ||P q||_2   dove P = U U^T
-    Se proj_norm ≈ 0, q e' ortogonale al piano → volume massimizzato.
+    Dato il proiettore P = U U^T, la proiezione di q sul piano e' Pq.
     
-    Il volume del parallelepipedo e':
-        vol = det(Gram(q, k1, k2)) = ||q|| · ||k1|| · ||k2|| · sin(θ)
-    dove θ e' l'angolo tra q e il piano.
+    L'angolo θ misura l'angolo tra q e la NORMALE al piano:
+        sin(θ) = ||Pq|| / ||q||   (q e' parallelo alla normale → θ=0)
+    
+    L'angolo dal piano (complementare) e':
+        φ = π/2 - θ  →  query perpendicolare al piano ⇔ φ ≈ 90°
+    
+    Il volume del parallelepipedo span(q, k1, k2) e':
+        vol = det(Gram(q, k1, k2)) = ||q|| · ||k1|| · ||k2|| · cos(θ)
+    Dove cos(θ) cresce quando q e' vicino al piano.
 
     Args:
         q: vettore query [d] o [B, d]
         U_plane: base del piano [d, 2]
 
     Returns:
-        proj_norm: norma della proiezione (scalare o [B])
-        angle: angolo tra q e il piano (radianti) = arcsin(proj_norm / ||q||)
+        proj_norm: norma della proiezione ||Pq|| (scalare o [B])
+        angle_from_normal: angolo tra q e la NORMALE al piano (rad)
+        angle_from_plane: angolo tra q e il PIANO (rad) = π/2 - angle_from_normal
     """
     from src.geometry.plane import projection_norm
     
@@ -209,16 +215,19 @@ def query_plane_relation(
     P = U_plane @ U_plane.T  # [d, d]
     proj_norm = projection_norm(P.unsqueeze(0), q)  # [B]
     
-    # Angolo: sin(θ) = ||proj|| / ||q||
+    # Angolo dalla normale: sin(θ) = ||proj|| / ||q||
     q_norm = torch.norm(q, dim=-1)
-    # Evita divisione per zero
     q_norm = torch.clamp(q_norm, min=1e-10)
     sin_theta = proj_norm / q_norm
     sin_theta = torch.clamp(sin_theta, 0.0, 1.0)
-    angle = torch.asin(sin_theta)
+    angle_from_normal = torch.asin(sin_theta)
+    
+    # Angolo dal piano (complementare)
+    angle_from_plane = torch.pi / 2 - angle_from_normal
     
     if not batched:
         proj_norm = proj_norm.squeeze(0)
-        angle = angle.squeeze(0)
+        angle_from_normal = angle_from_normal.squeeze(0)
+        angle_from_plane = angle_from_plane.squeeze(0)
     
-    return proj_norm, angle
+    return proj_norm, angle_from_normal, angle_from_plane

@@ -244,10 +244,13 @@ def analyze_checkpoint(
         q_mean = q_filters_query_mean(q_all)
         
         # 4. Relazione query-piano medio
-        proj_norm, angle = query_plane_relation(q_mean, U_mean)
+        proj_norm, angle_from_normal, angle_from_plane = query_plane_relation(q_mean, U_mean)
         
         # 5. Analisi distribuzione query nel piano medio
         query_dist = analyze_query_distribution(q_all, U_mean)
+        
+        angle_fn_deg = angle_from_normal.item() * 180 / 3.14159
+        angle_fp_deg = angle_from_plane.item() * 180 / 3.14159
         
         results[layer_idx] = {
             "num_vectors": N,
@@ -257,7 +260,9 @@ def analyze_checkpoint(
             "geodesic_distances": distances.cpu(),
             "q_mean": q_mean.cpu(),
             "query_plane_proj_norm": proj_norm.item(),
-            "query_plane_angle": angle.item(),
+            "query_angle_from_normal_rad": angle_from_normal.item(),
+            "query_angle_from_plane_rad": angle_from_plane.item(),
+            "query_angle_from_plane_deg": angle_fp_deg,
             "query_sigma1": query_dist["query_sigma1"],
             "query_sigma2": query_dist["query_sigma2"],
             "query_anisotropy_ratio": query_dist["query_anisotropy_ratio"],
@@ -265,11 +270,10 @@ def analyze_checkpoint(
         
         if verbose:
             print(f"    Varianza geodesica:  {var_g.item():.6f}")
-            print(f"    Proiezione q su P:   {proj_norm.item():.6f}")
-            print(f"    Angolo q-P (rad):    {angle.item():.4f}")
-            print(f"    σ1 query nel piano:  {query_dist['query_sigma1']:.4f}")
-            print(f"    σ2 query nel piano:  {query_dist['query_sigma2']:.4f}")
-            print(f"    Anisotropia σ1/σ2:   {query_dist['query_anisotropy_ratio']:.2f}")
+            print(f"    ||P q̄||:            {proj_norm.item():.6f}")
+            print(f"    q̄ dalla normale:     {angle_fn_deg:.1f}° (0° = q ∥ normale → volume massimo)")
+            print(f"    q̄ dal piano:         {angle_fp_deg:.1f}° (90° = q ⟂ piano → volume massimo)")
+            print(f"    σ1/σ2 (anisotropia): {query_dist['query_anisotropy_ratio']:.2f}")
     
     return results
 
@@ -281,12 +285,12 @@ def summarize_results(results: Dict):
     print("="*60)
     
     for layer_idx, metrics in sorted(results.items()):
+        angle_fp = metrics.get('query_angle_from_plane_deg', 'N/A')
         print(f"\n  Layer {layer_idx}:")
         print(f"    Vettori:              {metrics['num_vectors']}")
         print(f"    Varianza geodesica:   {metrics['geodesic_variance']:.6f}")
         print(f"    ||P q̄||:              {metrics['query_plane_proj_norm']:.6f}")
-        print(f"    Angolo q̄-P (rad):     {metrics['query_plane_angle']:.4f}")
-        print(f"    Angolo q̄-P (gradi):   {metrics['query_plane_angle'] * 180 / 3.14159:.1f}°")
+        print(f"    q̄ dal piano:          {angle_fp}° (90° = ⟂ piano → volume max)")
         print(f"    σ1/σ2 (anisotropia):  {metrics.get('query_anisotropy_ratio', 'N/A')}")
     
     print("\n" + "="*60)
