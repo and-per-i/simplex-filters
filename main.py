@@ -641,7 +641,8 @@ def main():
     # MODALITA' ANALISI GEOMETRICA
     # ======================================================================
     if args.analyze is not None:
-        return run_analysis(args.analyze, verbose=args.verbose)
+        device = "cpu" if args.analyze_cpu else "cuda"
+        return run_analysis(args.analyze, verbose=args.verbose, device=device)
 
     # ======================================================================
     # MODALITA' BENCHMARK EVICTION
