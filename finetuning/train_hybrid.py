@@ -187,6 +187,7 @@ def train(config: dict):
         lr_k2v2=config["lr_k2v2"],
         lr_k1v1=config["lr_k1v1"],
         weight_decay=config["weight_decay"],
+        attention_type=config["attention_type"],
     )
     optimizer = torch.optim.AdamW(
         param_groups,

@@ -17,16 +17,21 @@ def create_optimizer_groups(
     lr_k2v2: float = 2e-4,
     lr_k1v1: float = 2e-5,
     weight_decay: float = 0.01,
+    attention_type: str = "simplicial",
 ):
     """
-    Crea i 3 gruppi di parametri per AdamW.
+    Crea i gruppi di parametri per AdamW.
+
+    Per "simplicial": K2/V2 con LR alto, K1/V1 con LR basso, frozen il resto.
+    Per "gram_det": singolo gruppo trainable (q/k/v/o), frozen il resto.
 
     Args:
         model: modello ibrido
         simplicial_indices: [16, 20, 24, 28]
-        lr_k2v2: learning rate per K2/V2
-        lr_k1v1: learning rate per K1/V1
+        lr_k2v2: learning rate per K2/V2 (simplicial) o GramDet
+        lr_k1v1: learning rate per K1/V1 (simplicial)
         weight_decay: weight decay
+        attention_type: "simplicial" o "gram_det"
 
     Returns:
         lista di dict per AdamW
@@ -34,6 +39,7 @@ def create_optimizer_groups(
     frozen_params = []
     k1v1_params = []
     k2v2_params = []
+    gram_det_params = []
 
     for name, param in model.named_parameters():
         if not param.requires_grad:
@@ -44,6 +50,9 @@ def create_optimizer_groups(
         if not in_simplicial:
             param.requires_grad = False
             frozen_params.append(param)
+        elif attention_type == "gram_det":
+            # GramDet: tutti i pesi dei layer convertiti sono trainable
+            gram_det_params.append(param)
         elif "k2_proj" in name or "v2_proj" in name:
             k2v2_params.append(param)
         elif "k1_proj" in name or "v1_proj" in name:
@@ -55,14 +64,24 @@ def create_optimizer_groups(
     total = sum(p.numel() for p in model.parameters())
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-    print(f"[optimizer] Gruppi creati:")
-    print(f"  Frozen:        {sum(p.numel() for p in frozen_params):>10,} params")
-    print(f"  K1/V1 (lr={lr_k1v1}): {sum(p.numel() for p in k1v1_params):>10,} params")
-    print(f"  K2/V2 (lr={lr_k2v2}): {sum(p.numel() for p in k2v2_params):>10,} params")
-    print(f"  Trainable: {trainable:,}/{total:,} ({100*trainable/total:.2f}%)")
-
-    return [
-        {"params": frozen_params, "lr": 0.0, "weight_decay": 0.0},
-        {"params": k1v1_params, "lr": lr_k1v1, "weight_decay": weight_decay},
-        {"params": k2v2_params, "lr": lr_k2v2, "weight_decay": weight_decay},
-    ]
+    if attention_type == "gram_det":
+        gram_det_count = sum(p.numel() for p in gram_det_params)
+        print(f"[optimizer] Gruppi creati (GramDet):")
+        print(f"  Frozen:  {sum(p.numel() for p in frozen_params):>10,} params")
+        print(f"  GramDet: {gram_det_count:>10,} params")
+        print(f"  Trainable: {trainable:,}/{total:,} ({100*trainable/total:.2f}%)")
+        return [
+            {"params": frozen_params, "lr": 0.0, "weight_decay": 0.0},
+            {"params": gram_det_params, "lr": lr_k2v2, "weight_decay": weight_decay},
+        ]
+    else:
+        print(f"[optimizer] Gruppi creati:")
+        print(f"  Frozen:        {sum(p.numel() for p in frozen_params):>10,} params")
+        print(f"  K1/V1 (lr={lr_k1v1}): {sum(p.numel() for p in k1v1_params):>10,} params")
+        print(f"  K2/V2 (lr={lr_k2v2}): {sum(p.numel() for p in k2v2_params):>10,} params")
+        print(f"  Trainable: {trainable:,}/{total:,} ({100*trainable/total:.2f}%)")
+        return [
+            {"params": frozen_params, "lr": 0.0, "weight_decay": 0.0},
+            {"params": k1v1_params, "lr": lr_k1v1, "weight_decay": weight_decay},
+            {"params": k2v2_params, "lr": lr_k2v2, "weight_decay": weight_decay},
+        ]
