@@ -26,6 +26,8 @@ import os
 import sys
 import math
 import time
+import glob
+import shutil
 import argparse
 import yaml
 from typing import Dict, Optional
@@ -317,6 +319,12 @@ def train(config: dict):
                 "best_ppl": best_ppl,
             }, os.path.join(ckpt_path, "training_state.pt"))
             log_metrics({"train/checkpoint_saved": global_step}, global_step, wandb_active)
+
+            # Auto-pulizia: cancella checkpoint piu' vecchi (tieni solo ultimi 2)
+            all_ckpts = sorted(glob.glob(os.path.join(checkpoint_dir, "checkpoint-*")))
+            for old_ckpt in all_ckpts[:-2]:
+                print(f"  Spazio: cancellazione checkpoint vecchio {old_ckpt}")
+                shutil.rmtree(old_ckpt)
 
     # ======================================================================
     # Fine training

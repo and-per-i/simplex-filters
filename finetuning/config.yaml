@@ -34,7 +34,7 @@ beta2: 0.95
 # Monitoring
 log_every: 10
 val_every: 500
-save_every: 1000
+save_every: 2000  # ogni checkpoint ~17 GB, con 100 GB disco teniamo solo ultimi 2
 
 # Early stopping (validation su C4, non su Wikitext-2)
 # max_perplexity_gap: confronto con la baseline LLaMA su C4 (calcolata a inizio training)
