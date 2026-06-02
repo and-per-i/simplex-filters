@@ -84,19 +84,93 @@ def analyze_checkpoint(
         dict con risultati per ogni layer
     """
     from datasets import load_dataset
+    import os
     
-    # Carica modello
-    if verbose:
-        print(f"\nCaricamento checkpoint: {checkpoint_path}")
     # device="cpu" → device_map=None (device_map non accetta "cpu" come stringa)
     model_device_map = None if device == "cpu" else device
+    
+    # ================================================================
+    # FASE 1: Carica modello LLaMA base (pesi originali da disco locale)
+    # ================================================================
+    # Il checkpoint salvato usa architettura ibrida (k1_proj/k2_proj/v1_proj/v2_proj),
+    # ma AutoModelForCausalLM.from_pretrained carica solo architettura LLaMA standard.
+    # Quindi: carichiamo LLaMA base, convertiamo in ibrido, e sovrascriviamo i pesi
+    # K1/V1/K2/V2 con quelli addestrati dal checkpoint.
+    base_model_path = os.path.join(os.path.dirname(checkpoint_path), "..", "..", "llama-3.1-8b")
+    if not os.path.exists(base_model_path):
+        # Fallback: carica con local_files_only=False
+        base_model_path = "meta-llama/Llama-3.1-8B"
+    
+    if verbose:
+        print(f"\nFASE 1/3: Caricamento modello LLaMA base da {base_model_path}")
+    
+    hf_token = os.environ.get("HF_TOKEN")
     model = AutoModelForCausalLM.from_pretrained(
-        checkpoint_path,
+        base_model_path,
         torch_dtype=torch.bfloat16,
         device_map=model_device_map,
         attn_implementation="eager",
-        local_files_only=True,
+        token=hf_token,
     )
+    model.train()
+    
+    # ================================================================
+    # FASE 2: Converti in ibrido (crea i layer SimplicialAttention)
+    # ================================================================
+    from src.modeling.convert_to_hybrid import convert_llama_to_hybrid
+    from transformers import LlamaConfig
+    
+    if verbose:
+        print(f"FASE 2/3: Conversione in ibrido ({attention_type})...")
+    
+    model, converted = convert_llama_to_hybrid(
+        model,
+        simplicial_indices=simplicial_indices,
+        alpha=0.01,
+        w1=32,
+        w2=256,
+        attention_type=attention_type,
+        gram_window=8,
+    )
+    
+    # ================================================================
+    # FASE 3: Sovrascrivi con pesi addestrati dal checkpoint
+    # ================================================================
+    if verbose:
+        print(f"FASE 3/3: Caricamento pesi addestrati da {checkpoint_path}...")
+    
+    from safetensors.torch import load_file as safetensors_load
+    import glob
+    
+    # Cerca file .safetensors nel checkpoint
+    safetensor_files = glob.glob(os.path.join(checkpoint_path, "*.safetensors"))
+    if not safetensor_files:
+        # Cerca model.safetensors.index.json per capire i nomi file
+        index_path = os.path.join(checkpoint_path, "model.safetensors.index.json")
+        if os.path.exists(index_path):
+            import json
+            with open(index_path) as f:
+                index = json.load(f)
+            safetensor_files = list(set(index.get("weight_map", {}).values()))
+            safetensor_files = [os.path.join(checkpoint_path, f) for f in safetensor_files]
+    
+    if not safetensor_files:
+        raise FileNotFoundError(f"Nessun file .safetensors trovato in {checkpoint_path}")
+    
+    state_dict = {}
+    for sf in safetensor_files:
+        state_dict.update(safetensors_load(sf))
+    
+    # Sovrascrivi solo i pesi dei layer simpliciali
+    loaded_count = 0
+    for name, param in model.named_parameters():
+        if name in state_dict:
+            param.data.copy_(state_dict[name].to(param.device))
+            loaded_count += 1
+    
+    if verbose:
+        print(f"  Caricati {loaded_count} pesi dal checkpoint.")
+    
     model.eval()
     
     # Tokenizer
