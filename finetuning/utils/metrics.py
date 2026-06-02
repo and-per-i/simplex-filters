@@ -122,6 +122,7 @@ def evaluate_validation(
     model,
     val_batch: Dict[str, torch.Tensor],
     simplicial_indices: List[int],
+    attention_type: str = "simplicial",
 ) -> Dict[str, float]:
     """
     Valutazione completa: loss + perplexity + distanza K1/K2.
@@ -130,11 +131,14 @@ def evaluate_validation(
         model: modello ibrido
         val_batch: batch di validazione
         simplicial_indices: [16, 20, 24, 28]
+        attention_type: "simplicial" o "gram_det" (per chunk_size)
 
     Returns:
         dict con metriche
     """
-    loss = evaluate_loss(model, val_batch)
+    # GramDet materializza [B, H, N, P, d] → usa chunk piu' piccoli per evitare OOM
+    chunk_size = 2 if attention_type == "gram_det" else 8
+    loss = evaluate_loss(model, val_batch, chunk_size=chunk_size)
     ppl = compute_perplexity(loss)
 
     metrics = {

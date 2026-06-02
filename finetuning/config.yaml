@@ -9,6 +9,7 @@ simplicial_indices: [16, 20, 24, 28]
 alpha: 0.01
 w1: 32
 w2: 256
+gram_window: 4
 
 # Dataset
 dataset_name: "allenai/c4"

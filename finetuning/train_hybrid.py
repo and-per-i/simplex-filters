@@ -330,7 +330,10 @@ def train(config: dict):
             print(f"{'─'*50}")
 
             # Validazione su C4 (stesso dominio del training)
-            val_metrics = evaluate_validation(model, val_batch_c4, config["simplicial_indices"])
+            val_metrics = evaluate_validation(
+                model, val_batch_c4, config["simplicial_indices"],
+                attention_type=config["attention_type"],
+            )
             log_metrics(val_metrics, global_step, wandb_active)
 
             ppl = val_metrics["val/perplexity"]
