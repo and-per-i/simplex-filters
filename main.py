@@ -592,9 +592,8 @@ def main():
     if args.both:
         ensure_config()
 
-        # FASE 0: Baseline LLaMA
-        run_llama_base_baseline()
-        free_gpu_memory()
+        # FASE 0: saltata (baseline LLaMA causa OOM con context_len=8192)
+        # La PPL baseline C4 e' fissata a 9.45 (letteratura) come costante
 
         # FASE 1: TRILINEARE
         print(f"\n{BOLD}══════════════════════════════════════════════════════════════{NC}")
