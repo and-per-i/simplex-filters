@@ -10,7 +10,7 @@ Fornisce:
 import math
 import torch
 import torch.nn.functional as F
-from typing import List, Dict
+from typing import Any, List, Dict
 
 
 def compute_perplexity(loss: float) -> float:
@@ -21,7 +21,7 @@ def compute_perplexity(loss: float) -> float:
 def compute_k1k2_distances(
     model,
     simplicial_indices: List[int],
-) -> Dict[str, float]:
+) -> Dict[str, Any]:
     """
     Calcola la distanza L2 media tra K2/K1 e V2/V1 per ogni layer simpliciale.
 
@@ -52,12 +52,20 @@ def compute_k1k2_distances(
         layer_metrics[f"l2_k1k2_layer_{idx}"] = diff_k
         layer_metrics[f"l2_v1v2_layer_{idx}"] = diff_v
 
-    num_layers = len(simplicial_indices)
-    results = {
-        "l2_k1k2_mean": total_l2_k / num_layers if num_layers > 0 else 0.0,
-        "l2_v1v2_mean": total_l2_v / num_layers if num_layers > 0 else 0.0,
-        **layer_metrics,
-    }
+    num_layers_with_proj = len(layer_metrics) // 2  # ogni layer ha 2 metriche (k e v)
+
+    # Per GramDet: nessun layer ha k1_proj/k2_proj → N/A invece di 0.0
+    if num_layers_with_proj == 0:
+        results = {
+            "l2_k1k2_mean": "N/A",
+            "l2_v1v2_mean": "N/A",
+        }
+    else:
+        results = {
+            "l2_k1k2_mean": total_l2_k / num_layers_with_proj,
+            "l2_v1v2_mean": total_l2_v / num_layers_with_proj,
+            **layer_metrics,
+        }
     return results
 
 

@@ -51,8 +51,12 @@ def create_optimizer_groups(
             param.requires_grad = False
             frozen_params.append(param)
         elif attention_type == "gram_det":
-            # GramDet: tutti i pesi dei layer convertiti sono trainable
-            gram_det_params.append(param)
+            # GramDet: solo q/k/v/o sono trainable (268M), il resto freeze
+            if "q_proj" in name or "k_proj" in name or "v_proj" in name or "o_proj" in name:
+                gram_det_params.append(param)
+            else:
+                param.requires_grad = False
+                frozen_params.append(param)
         elif "k2_proj" in name or "v2_proj" in name:
             k2v2_params.append(param)
         elif "k1_proj" in name or "v1_proj" in name:

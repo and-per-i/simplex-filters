@@ -135,6 +135,13 @@ class GramDetAttention(nn.Module):
         k = self.k_proj(x).view(B, N, H, d).transpose(1, 2)  # [B, H, N, d]
         v = self.v_proj(x).view(B, N, H, d).transpose(1, 2)  # [B, H, N, d]
 
+        # 1b. Normalizza q e k per stabilità numerica del determinante di Gram
+        # Il determinante di Gram di vettori unitari è bounded in [0,1].
+        # Senza normalizzazione, i termini di Sarrus con pesi LLaMA pretrained
+        # possono valere O(10^6) → softmax collassa a one-hot su rumore.
+        q = F.normalize(q, p=2, dim=-1, eps=1e-8)
+        k = F.normalize(k, p=2, dim=-1, eps=1e-8)
+
         # 2. Window extraction vettorizzata
         # Paddiamo con W zeri a sinistra e destra della sequenza
         k_pad = F.pad(k, (0, 0, W, W))  # [B, H, N+2W, d]
@@ -256,6 +263,10 @@ class GramDetAttention(nn.Module):
         q = self.q_proj(x).view(B, N, H, d).transpose(1, 2)
         k = self.k_proj(x).view(B, N, H, d).transpose(1, 2)
         v = self.v_proj(x).view(B, N, H, d).transpose(1, 2)
+
+        # Normalizza q e k (stessa normalizzazione di _forward_gram_det)
+        q = F.normalize(q, p=2, dim=-1, eps=1e-8)
+        k = F.normalize(k, p=2, dim=-1, eps=1e-8)
 
         output = torch.zeros_like(q)
         all_weights_list = [] if return_weights else None
