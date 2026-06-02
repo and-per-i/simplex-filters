@@ -8,7 +8,7 @@ import torch
 from typing import Dict, List, Optional
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from src.geometry.hooks import ActivationSaver, batch_to_planes
+from src.geometry.hooks import ActivationSaver, batch_to_planes, batch_to_planes_gram_det
 from src.geometry.grassmann import (
     frechet_mean_planes,
     geodesic_variance,
@@ -215,10 +215,15 @@ def analyze_checkpoint(
             activations = saver.get_data()
             saver.remove_hooks()
             
-            # Estrai piani e query
-            U_list, q_vectors = batch_to_planes(
-                activations, layer_idx, num_heads, head_dim, device=device
-            )
+            # Estrai piani e query (diverso per trilineare vs GramDet)
+            if attention_type == "gram_det":
+                U_list, q_vectors = batch_to_planes_gram_det(
+                    activations, layer_idx, num_heads, head_dim, device=device, num_pairs=500,
+                )
+            else:
+                U_list, q_vectors = batch_to_planes(
+                    activations, layer_idx, num_heads, head_dim, device=device,
+                )
             all_U.append(U_list)
             all_q.append(q_vectors)
         

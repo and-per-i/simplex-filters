@@ -172,3 +172,62 @@ def batch_to_planes(
         U_list[i] = U
     
     return U_list, q
+
+
+def batch_to_planes_gram_det(
+    activations: Dict,
+    layer_idx: int,
+    num_heads: int = 32,
+    head_dim: int = 128,
+    device: str = "cpu",
+    num_pairs: int = 500,
+) -> torch.Tensor:
+    """
+    Estrae K e Q per un layer GramDet e costruisce piani da coppie random.
+    
+    GramDet ha una sola proiezione K → k1 == k2 per ogni token → piani degeneri.
+    Invece campioniamo coppie (k[j1], k[j2]) con j1 ≠ j2 da posizioni diverse,
+    costruendo piani 2D validi per l'analisi sulla Grassmanniana.
+    
+    Args:
+        activations: dict dall'ActivationSaver
+        layer_idx: indice del layer
+        num_heads: numero di teste
+        head_dim: dimensione testa
+        device: device per il calcolo
+        num_pairs: numero di coppie da campionare (default: 500)
+        
+    Returns:
+        U_list: basi ortonormali [num_pairs, d, 2]
+        Q_vectors: vettori query corrispondenti [num_pairs, d]
+    """
+    from src.geometry.plane import plane_projector_and_basis
+    
+    K = extract_key_vectors(activations, layer_idx, 'k1', num_heads, head_dim).to(device)
+    Q = extract_key_vectors(activations, layer_idx, 'q', num_heads, head_dim).to(device)
+    
+    N = K.shape[0]
+    actual_pairs = min(num_pairs, N * (N - 1) // 2)
+    
+    # Genera coppie (j1, j2) garantendo j1 ≠ j2
+    # Usando permutazioni casuali garantiamo indici distinti
+    all_indices = torch.randperm(N, device=device)
+    idx1 = all_indices[:actual_pairs]
+    # Per il secondo indice, usiamo lo shift ciclico: diverso dal primo per costruzione
+    idx2 = all_indices[torch.arange(actual_pairs) % N]
+    # Shift per garantire j1 ≠ j2 anche quando actual_pairs >= N
+    idx2 = all_indices[(torch.arange(actual_pairs) + actual_pairs // 2) % N]
+    
+    U_list = torch.zeros(actual_pairs, head_dim, 2, device=device)
+    q_sampled = torch.zeros(actual_pairs, head_dim, device=device)
+    
+    for p in range(actual_pairs):
+        j1, j2 = idx1[p].item(), idx2[p].item()
+        if j1 == j2:
+            # Fallback: prendi il ciclo successivo
+            j2 = (j2 + 1) % N
+        _, U, _ = plane_projector_and_basis(K[j1], K[j2])
+        U_list[p] = U
+        q_sampled[p] = Q[j1]  # query associata al primo token della coppia
+    
+    return U_list, q_sampled
