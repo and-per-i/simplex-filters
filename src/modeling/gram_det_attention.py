@@ -164,11 +164,11 @@ class GramDetAttention(nn.Module):
         # q espanso: [B, H, N, 1, d] per broadcasting su P
         q_exp = q.unsqueeze(-2)  # [B, H, N, 1, d]
 
-        qq   = (q_exp * q_exp).sum(dim=-1).squeeze(-2)               # [B, H, N]
+        qq   = (q * q).sum(dim=-1)                                     # [B, H, N]
         k1k1 = (k1 * k1).sum(dim=-1)                                  # [B, H, N, P]
         k2k2 = (k2 * k2).sum(dim=-1)                                  # [B, H, N, P]
-        qk1  = (q_exp * k1).sum(dim=-1).squeeze(-2)                   # [B, H, N, P]
-        qk2  = (q_exp * k2).sum(dim=-1).squeeze(-2)                   # [B, H, N, P]
+        qk1  = (q.unsqueeze(-2) * k1).sum(dim=-1)                     # [B, H, N, P]
+        qk2  = (q.unsqueeze(-2) * k2).sum(dim=-1)                     # [B, H, N, P]
         k1k2 = (k1 * k2).sum(dim=-1)                                  # [B, H, N, P]
 
         # ========== DEBUG ==========
