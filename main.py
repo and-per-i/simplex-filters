@@ -586,6 +586,8 @@ def main():
                         help="Output verboso dei test")
     parser.add_argument("--stop-on-failure", action="store_true",
                         help="Ferma al primo fallimento")
+    parser.add_argument("--analyze-cpu", action="store_true",
+                        help="Forza analisi geometrica su CPU (quando GPU e' occupata dal training)")
 
     args = parser.parse_args()
 

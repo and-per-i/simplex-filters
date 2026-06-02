@@ -88,10 +88,12 @@ def analyze_checkpoint(
     # Carica modello
     if verbose:
         print(f"\nCaricamento checkpoint: {checkpoint_path}")
+    # device="cpu" → device_map=None (device_map non accetta "cpu" come stringa)
+    model_device_map = None if device == "cpu" else device
     model = AutoModelForCausalLM.from_pretrained(
         checkpoint_path,
         torch_dtype=torch.bfloat16,
-        device_map=device,
+        device_map=model_device_map,
         attn_implementation="eager",
         local_files_only=True,
     )
