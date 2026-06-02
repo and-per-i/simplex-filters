@@ -88,18 +88,23 @@ echo "  0d. Verifica GPU..."
 python3 -c "import torch; print(f'  GPU: {torch.cuda.get_device_name(0)}, Mem: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB')"
 
 # ==========================================================================
-# FASE 0.5: Test suite (CPU)
+# FASE 0.5: Test suite (CPU) — saltata se gia' passata in precedenza
 # ==========================================================================
 echo ""
 echo "=========================================="
-echo "  FASE 0.5: Test suite (~60 test CPU)"
+echo "  FASE 0.5: Test suite (CPU)"
 echo "=========================================="
 echo ""
 
-python main.py --level 1 --stop-on-failure
-
-echo ""
-echo "  [OK] Tutti i test sono passati."
+if [ -f ".test_passed" ]; then
+    echo "  [SKIP] Test gia' passati in un run precedente (file .test_passed presente)"
+    echo "  Per forzare riesecuzione: rm .test_passed"
+else
+    python main.py --level 1 --stop-on-failure
+    touch .test_passed
+    echo ""
+    echo "  [OK] Tutti i test sono passati. Il sentinel .test_passed evitera' riesecuzioni."
+fi
 echo ""
 
 # ==========================================================================

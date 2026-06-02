@@ -3,3 +3,4 @@
 __pycache__/
 .env
 *.safetensors
+.test_passed
