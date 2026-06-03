@@ -153,14 +153,14 @@ def _install_hooks(model, indices: list) -> list[dict]:
 def _gini(probs: torch.Tensor) -> torch.Tensor:
     """
     Gini coefficient normalizzato per distribuzioni discrete.
-    G = (n+1)/(n-1) - 2 * sum_{i}(p_i * (n+1-i)) / ((n-1) * n * sum(p))
-    Versione semplificata: 1 - sum(p_i^2) (equivalente a 1 - Simpson index).
-    Dà [0, 1] dove 0 = uniforme, 1 = one-hot.
+    0 = uniforme, 1 = one-hot.
+    
+    Formula: G = (n * sum(p_i^2) - 1) / (n - 1)
+    - n = numero di bucket (P)
+    - sum(p_i^2) = Simpson index (1 per one-hot, 1/n per uniforme)
     """
-    # Più semplice: entropy ratio
     n = probs.shape[-1]
-    # Gini = 1 - sum(p_i^2) / (1/n)  =  1 - n * sum(p_i^2)
-    g = 1.0 - probs.pow(2).sum(dim=-1) * n / (n - 1)
+    g = (probs.pow(2).sum(dim=-1) * n - 1.0) / (n - 1.0)
     return g.clamp(0, 1).mean()
 
 

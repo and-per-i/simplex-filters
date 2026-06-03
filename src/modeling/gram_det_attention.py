@@ -65,7 +65,7 @@ class GramDetAttention(nn.Module):
         self.head_dim = head_dim or (d_model // n_heads)
         self.W = window_size  # half-window
         self.W_full = 2 * self.W + 1  # dimensione totale finestra
-        self.scaling = self.head_dim ** -0.5
+        self.scaling = 1.0  # head_dim ** -0.5 = 0.088 e' troppo piccolo — rende softmax uniforme su 153 coppie
 
         # Pre-calcola e registra gli indici delle coppie come buffer
         pair_indices = _build_pair_indices(self.W)  # [P, 2]
