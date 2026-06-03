@@ -487,7 +487,7 @@ def load_model_from_ckpt(ckpt_path: Optional[str], gram_window: int, device: str
         model = AutoModelForCausalLM.from_pretrained(
             MODEL_NAME,
             torch_dtype=torch.bfloat16,
-            device_map="auto",
+            device_map="cuda",
             attn_implementation="eager",
         )
         model.train()
@@ -513,7 +513,7 @@ def load_model_from_ckpt(ckpt_path: Optional[str], gram_window: int, device: str
     model = AutoModelForCausalLM.from_pretrained(
         ckpt_path,
         torch_dtype=torch.bfloat16,
-        device_map="auto",
+        device_map="cuda",
         attn_implementation="eager",
         local_files_only=True,
     )
