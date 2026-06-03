@@ -470,10 +470,40 @@ def section_grad(
 # ==========================================================================
 # Carica modello + tokenizer
 # ==========================================================================
-def load_model_from_ckpt(ckpt_path: str, gram_window: int, device: str) -> tuple:
-    """Carica modello dal checkpoint."""
+def load_model_from_ckpt(ckpt_path: Optional[str], gram_window: int, device: str) -> tuple:
+    """
+    Carica modello dal checkpoint (con pesi GramDet sovrascritti),
+    OPPURE carica LLaMA fresco da HuggingFace se ckpt_path e' None.
+    """
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from src.modeling.convert_to_hybrid import convert_llama_to_hybrid
+
+    if ckpt_path is None:
+        print(f"\n  {BOLD}Nessun checkpoint specificato.{NC}")
+        print(f"  Carico LLaMA 8B fresco da HuggingFace e converto al volo con gram_window={gram_window}")
+        model = AutoModelForCausalLM.from_pretrained(
+            MODEL_NAME,
+            torch_dtype=torch.bfloat16,
+            device_map="auto",
+            attn_implementation="eager",
+        )
+        model.train()
+
+        model, converted = convert_llama_to_hybrid(
+            model,
+            simplicial_indices=SIMPLICIAL_INDICES,
+            alpha=0.01,
+            w1=32,
+            w2=256,
+            attention_type="gram_det",
+            gram_window=gram_window,
+        )
+        print(f"  Layer convertiti (da zero): {converted}")
+
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+        tokenizer.pad_token = tokenizer.eos_token
+        model.to(device)
+        return model, tokenizer
 
     print(f"\n  {BOLD}Caricamento modello da checkpoint:{NC} {ckpt_path}")
 
@@ -553,15 +583,22 @@ def main():
     print(f"  Gram window: {args.gram_window}")
     print(f"  Sezione: {args.section}")
 
-    # Trova checkpoint
+    # Trova checkpoint (None = carica LLaMA fresco + converti al volo)
     ckpt_path = args.ckpt
-    if ckpt_path is None:
-        ckpt_path = _find_latest_checkpoint("./checkpoints/gram_det/")
-        if ckpt_path is None:
-            print(f"  {RED}[ERR]{NC} Nessun checkpoint trovato in ./checkpoints/gram_det/")
-            print(f"  Specifica con --ckpt <path>")
-            return 1
-        print(f"  Checkpoint auto-rilevato: {ckpt_path}")
+    if ckpt_path is not None:
+        # Path esplicito: usa quello, ma cerca auto se non esiste
+        if not os.path.exists(ckpt_path):
+            print(f"  {YELLOW}[WARN]{NC} Checkpoint {ckpt_path} non trovato. Cerco l'ultimo...")
+            ckpt_path = _find_latest_checkpoint("./checkpoints/gram_det/")
+            if ckpt_path is not None:
+                print(f"  Checkpoint auto-rilevato: {ckpt_path}")
+        else:
+            print(f"  Checkpoint: {ckpt_path}")
+    else:
+        # Nessun path specificato → carica LLaMA fresco + converti al volo
+        print(f"  {YELLOW}[INFO]{NC} Nessun checkpoint specificato. Carico LLaMA 8B fresco da HuggingFace...")
+        print(f"  La conversione al volo creerà layer GramDet con gram_window={args.gram_window}.")
+        print(f"  (I pesi GramDet saranno quelli originali di LLaMA, non addestrati.)")
 
     # Carica modello
     model, tokenizer = load_model_from_ckpt(ckpt_path, args.gram_window, device)
