@@ -45,7 +45,8 @@ def analyze_query_distribution(
     q_proj = U_mean.T @ q_all.T  # [2, N]
     
     # SVD sulla matrice delle proiezioni
-    U, sigma, Vh = torch.linalg.svd(q_proj, full_matrices=False)
+    # SVD non supporta BFloat16 su CUDA
+    U, sigma, Vh = torch.linalg.svd(q_proj.float(), full_matrices=False)
     sigma1, sigma2 = sigma[0].item(), sigma[1].item()
     ratio = sigma1 / sigma2 if sigma2 > 1e-10 else float('inf')
     
