@@ -37,8 +37,10 @@ def plane_projector(k1: torch.Tensor, k2: torch.Tensor) -> torch.Tensor:
     # Impila: A = [k1, k2]  →  [B, d, 2]
     A = torch.stack([k1, k2], dim=-1)  # [B, d, 2]
 
-    # SVD
-    U, S, Vh = torch.linalg.svd(A, full_matrices=False)
+    # SVD (float32 per compatibilita' CUDA — SVD non supporta BFloat16)
+    U, S, Vh = torch.linalg.svd(A.float(), full_matrices=False)
+    U = U.to(A.dtype)
+    S = S.to(A.dtype)
     # U: [B, d, 2] — base ortonormale del piano
     # S: [B, 2] — valori singolari
     # Vh: [B, 2, 2] — rotazioni
@@ -69,7 +71,9 @@ def plane_projector_and_basis(k1: torch.Tensor, k2: torch.Tensor):
         batched = True
 
     A = torch.stack([k1, k2], dim=-1)
-    U, S, Vh = torch.linalg.svd(A, full_matrices=False)
+    U, S, Vh = torch.linalg.svd(A.float(), full_matrices=False)
+    U = U.to(A.dtype)
+    S = S.to(A.dtype)
     P = U @ U.transpose(-2, -1)
 
     if not batched:
@@ -99,8 +103,9 @@ def principal_angles(U1: torch.Tensor, U2: torch.Tensor) -> torch.Tensor:
     # Matrice di correlazione
     Sigma = U1.transpose(-2, -1) @ U2  # [B, 2, 2] o [2, 2]
 
-    # SVD
-    _, s, _ = torch.linalg.svd(Sigma, full_matrices=False)
+    # SVD (float32 per compatibilita' CUDA)
+    _, s, _ = torch.linalg.svd(Sigma.float(), full_matrices=False)
+    s = s.to(Sigma.dtype)
 
     # Clamp e arccos
     s = torch.clamp(s, -1.0, 1.0)
