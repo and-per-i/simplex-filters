@@ -20,6 +20,7 @@ from typing import Optional
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
+import glob
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from datasets import load_dataset
@@ -36,15 +37,59 @@ BOLD = "\033[1m"
 NC = "\033[0m"
 
 
-def load_model(ckpt_path: str, device: str = "cuda") -> tuple:
-    """Carica modello dal checkpoint."""
+def load_model(ckpt_path: str, gram_window: int = 8, device: str = "cuda") -> tuple:
+    """
+    Carica modello dal checkpoint GramDet.
+    Stessa logica di diagnose_checkpoint: carica LLaMA fresco da HF,
+    copia pesi matching, converte in GramDet, copia pesi GramDet addestrati.
+    """
+    from safetensors.torch import load_file as safetensors_load
+    from src.modeling.convert_to_hybrid import convert_llama_to_hybrid
+
+    # 1. Carica state_dict dal checkpoint
+    ckpt_state = {}
+    safetensor_files = glob.glob(os.path.join(ckpt_path, "*.safetensors"))
+    if not safetensor_files:
+        idx_path = os.path.join(ckpt_path, "model.safetensors.index.json")
+        if os.path.exists(idx_path):
+            import json
+            with open(idx_path) as f:
+                ix = json.load(f)
+            safetensor_files = list(set(ix["weight_map"].values()))
+            safetensor_files = [os.path.join(ckpt_path, f) for f in safetensor_files]
+    for sf in safetensor_files:
+        ckpt_state.update(safetensors_load(sf))
+
+    # 2. Carica LLaMA fresco da HF
     model = AutoModelForCausalLM.from_pretrained(
-        ckpt_path,
+        "meta-llama/Llama-3.1-8B",
         torch_dtype=torch.bfloat16,
         device_map="auto",
         attn_implementation="eager",
-        local_files_only=True,
     )
+
+    # 3. Copia pesi matching
+    for name, param in model.named_parameters():
+        if name in ckpt_state and ckpt_state[name].shape == param.shape:
+            param.data.copy_(ckpt_state[name].to(param.device))
+
+    # 4. Converti in GramDet
+    model, converted = convert_llama_to_hybrid(
+        model,
+        simplicial_indices=[16, 20, 24, 28],
+        alpha=0.01,
+        w1=32,
+        w2=256,
+        attention_type="gram_det",
+        gram_window=gram_window,
+    )
+
+    # 5. Copia pesi GramDet
+    for name, param in model.named_parameters():
+        if name in ckpt_state and any(f"layers.{i}." in name for i in [16, 20, 24, 28]):
+            if ckpt_state[name].shape == param.shape:
+                param.data.copy_(ckpt_state[name].to(param.device))
+
     model.eval()
     return model
 
@@ -77,7 +122,7 @@ def eval_checkpoint(
     Restituisce PPL.
     """
     print(f"  Caricamento checkpoint: {ckpt_path}...", end=" ", flush=True)
-    model = load_model(ckpt_path, device)
+    model = load_model(ckpt_path, device=device)
     print("OK")
 
     ppl = compute_perplexity(
