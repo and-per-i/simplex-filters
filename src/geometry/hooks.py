@@ -207,16 +207,16 @@ def batch_to_planes_gram_det(
     Q = extract_key_vectors(activations, layer_idx, 'q', num_heads, head_dim).to(device)
     
     N = K.shape[0]
-    actual_pairs = min(num_pairs, N * (N - 1) // 2)
+    # Limita il numero di coppie a N (non di piu' — non abbiamo abbastanza token)
+    actual_pairs = min(num_pairs, N, N * (N - 1) // 2)
     
-    # Genera coppie (j1, j2) garantendo j1 ≠ j2
-    # Usando permutazioni casuali garantiamo indici distinti
+    # Genera coppie (j1, j2) garantendo j1 ≠ j2 via permutazione + shift ciclico
     all_indices = torch.randperm(N, device=device)
-    idx1 = all_indices[:actual_pairs]
-    # Per il secondo indice, usiamo lo shift ciclico: diverso dal primo per costruzione
-    idx2 = all_indices[torch.arange(actual_pairs) % N]
-    # Shift per garantire j1 ≠ j2 anche quando actual_pairs >= N
-    idx2 = all_indices[(torch.arange(actual_pairs) + actual_pairs // 2) % N]
+    idx1 = all_indices
+    idx2 = all_indices[(torch.arange(N, device=device) + N // 2) % N]
+    # Garantisce j1 != j2 anche quando N=1
+    if N > 1 and torch.all(idx1 == idx2):
+        idx2 = all_indices[(torch.arange(N, device=device) + N // 2 + 1) % N]
     
     U_list = torch.zeros(actual_pairs, head_dim, 2, device=device)
     q_sampled = torch.zeros(actual_pairs, head_dim, device=device)
