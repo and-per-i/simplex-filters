@@ -331,7 +331,7 @@ def run_tests(levels, verbose=False, stop_on_failure=False, model_name="random",
 # Step 5: Analisi geometrica
 # ==========================================================================
 
-def run_analysis(checkpoint_path: str, verbose: bool = False, device: str = "cuda"):
+def run_analysis(checkpoint_path: str, verbose: bool = False, device: str = "cuda", attention_type: str = "simplicial"):
     """
     Esegue l'analisi geometrica completa su un checkpoint addestrato.
     
@@ -343,6 +343,7 @@ def run_analysis(checkpoint_path: str, verbose: bool = False, device: str = "cud
         checkpoint_path: path al checkpoint
         verbose: output verboso
         device: "cuda" o "cpu" — usa "cpu" quando la GPU e' occupata dal training
+        attention_type: "simplicial" (trilineare) o "gram_det"
     """
     from src.geometry.analyzer import analyze_checkpoint, summarize_results
 
@@ -352,6 +353,7 @@ def run_analysis(checkpoint_path: str, verbose: bool = False, device: str = "cud
     print(f"\n{BOLD}{'=' * 60}{NC}")
     print(f"{BOLD}  ANALISI GEOMETRICA{NC}")
     print(f"{BOLD}  Checkpoint: {abs_path}{NC}")
+    print(f"{BOLD}  Attention type: {attention_type}{NC}")
     print(f"{BOLD}  Device: {device}{NC}")
     print(f"{BOLD}{'=' * 60}{NC}\n")
 
@@ -361,7 +363,7 @@ def run_analysis(checkpoint_path: str, verbose: bool = False, device: str = "cud
     try:
         results = analyze_checkpoint(
             checkpoint_path=abs_path,
-            attention_type="simplicial",
+            attention_type=attention_type,
             num_analysis_batches=5,
             seq_length=256,
             device=device,
@@ -650,7 +652,12 @@ def main():
     # ======================================================================
     if args.analyze is not None:
         device = "cpu" if args.analyze_cpu else "cuda"
-        return run_analysis(args.analyze, verbose=args.verbose, device=device)
+        return run_analysis(
+            args.analyze,
+            verbose=args.verbose,
+            device=device,
+            attention_type=args.attention_type,
+        )
 
     # ======================================================================
     # MODALITA' BENCHMARK EVICTION
