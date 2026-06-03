@@ -381,7 +381,11 @@ def train(config: dict):
             log_metrics({"train/checkpoint_saved": global_step}, global_step, wandb_active)
 
             # Auto-pulizia: cancella checkpoint piu' vecchi (tieni solo ultimi 2)
-            all_ckpts = sorted(glob.glob(os.path.join(checkpoint_dir, "checkpoint-*")))
+            # Ordina per step numerico (non lessicografico — check-10 < check-2!)
+            all_ckpts = sorted(
+                glob.glob(os.path.join(checkpoint_dir, "checkpoint-*")),
+                key=lambda p: int(os.path.basename(p).split("-")[-1]),
+            )
             for old_ckpt in all_ckpts[:-2]:
                 print(f"  Spazio: cancellazione checkpoint vecchio {old_ckpt}")
                 shutil.rmtree(old_ckpt)
