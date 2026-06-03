@@ -40,11 +40,12 @@ NC = "\033[0m"
 def load_model(ckpt_path: str, gram_window: int = 8, device: str = "cuda") -> tuple:
     """
     Carica modello dal checkpoint GramDet.
-    Stessa logica di diagnose_checkpoint: carica LLaMA fresco da HF,
-    copia pesi matching, converte in GramDet, copia pesi GramDet addestrati.
+    Stessa logica di train_hybrid.py resume: carica checkpoint ignorando mismatch,
+    poi converti in GramDet, poi ricarica pesi GramDet dal ckpt_state.
     """
     from safetensors.torch import load_file as safetensors_load
     from src.modeling.convert_to_hybrid import convert_llama_to_hybrid
+    from src.modeling.gram_det_attention import GramDetAttention
 
     # 1. Carica state_dict dal checkpoint
     ckpt_state = {}
@@ -60,20 +61,17 @@ def load_model(ckpt_path: str, gram_window: int = 8, device: str = "cuda") -> tu
     for sf in safetensor_files:
         ckpt_state.update(safetensors_load(sf))
 
-    # 2. Carica LLaMA fresco da HF
+    # 2. Carica checkpoint direttamente (lascia mismatch — verranno ricopiati)
     model = AutoModelForCausalLM.from_pretrained(
-        "meta-llama/Llama-3.1-8B",
+        ckpt_path,
         torch_dtype=torch.bfloat16,
         device_map="auto",
         attn_implementation="eager",
+        local_files_only=True,
+        ignore_mismatched_sizes=True,
     )
 
-    # 3. Copia pesi matching
-    for name, param in model.named_parameters():
-        if name in ckpt_state and ckpt_state[name].shape == param.shape:
-            param.data.copy_(ckpt_state[name].to(param.device))
-
-    # 4. Converti in GramDet
+    # 3. Converti in GramDet (cambia architettura layer 16,20,24,28)
     model, converted = convert_llama_to_hybrid(
         model,
         simplicial_indices=[16, 20, 24, 28],
@@ -84,11 +82,14 @@ def load_model(ckpt_path: str, gram_window: int = 8, device: str = "cuda") -> tu
         gram_window=gram_window,
     )
 
-    # 5. Copia pesi GramDet
+    # 4. Sovrascrivi TUTTI i pesi GramDet dal checkpoint
+    #    Dopo la conversione, le shape coincidono ([4096,4096] come salvato)
+    loaded = 0
     for name, param in model.named_parameters():
-        if name in ckpt_state and any(f"layers.{i}." in name for i in [16, 20, 24, 28]):
-            if ckpt_state[name].shape == param.shape:
-                param.data.copy_(ckpt_state[name].to(param.device))
+        if name in ckpt_state and ckpt_state[name].shape == param.shape:
+            param.data.copy_(ckpt_state[name].to(param.device))
+            loaded += 1
+    print(f"  Caricati {loaded} pesi totali dal checkpoint (match per shape).")
 
     model.eval()
     return model
