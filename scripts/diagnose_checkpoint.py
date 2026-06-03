@@ -510,57 +510,62 @@ def load_model_from_ckpt(ckpt_path: Optional[str], gram_window: int, device: str
 
     print(f"\n  {BOLD}Caricamento modello da checkpoint:{NC} {ckpt_path}")
 
+    # 1. Carica state_dict dal checkpoint (safetensors)
+    from safetensors.torch import load_file as safetensors_load
+    ckpt_state = {}
+    safetensor_files = glob.glob(os.path.join(ckpt_path, "*.safetensors"))
+    if not safetensor_files:
+        idx_path = os.path.join(ckpt_path, "model.safetensors.index.json")
+        if os.path.exists(idx_path):
+            import json
+            with open(idx_path) as f:
+                ix = json.load(f)
+            safetensor_files = list(set(ix["weight_map"].values()))
+            safetensor_files = [os.path.join(ckpt_path, f) for f in safetensor_files]
+    for sf in safetensor_files:
+        ckpt_state.update(safetensors_load(sf))
+
+    # 2. Carica LLaMA fresco da HuggingFace (evita mismatch shape)
     model = AutoModelForCausalLM.from_pretrained(
-        ckpt_path,
+        MODEL_NAME,
         torch_dtype=torch.bfloat16,
         device_map="cuda",
         attn_implementation="eager",
-        local_files_only=True,
-        ignore_mismatched_sizes=True,
     )
     model.train()
+
+    # 3. Carica TUTTI i pesi LLaMA che matchano per shape
+    loaded_match = 0
+    for name, param in model.named_parameters():
+        if name in ckpt_state and ckpt_state[name].shape == param.shape:
+            param.data.copy_(ckpt_state[name].to(param.device))
+            loaded_match += 1
+    print(f"  Caricati {loaded_match} pesi dal checkpoint (match per shape).")
+
+    # 4. Converti in ibrido
+    model, converted = convert_llama_to_hybrid(
+        model,
+        simplicial_indices=SIMPLICIAL_INDICES,
+        alpha=0.01,
+        w1=32,
+        w2=256,
+        attention_type="gram_det",
+        gram_window=gram_window,
+    )
+    print(f"  Layer convertiti: {converted}")
+
+    # 5. Carica pesi GramDet dal checkpoint (shape match perche' convertiti)
+    loaded_gram = 0
+    for name, param in model.named_parameters():
+        if name in ckpt_state and any(f"layers.{i}." in name for i in SIMPLICIAL_INDICES):
+            if ckpt_state[name].shape == param.shape:
+                param.data.copy_(ckpt_state[name].to(param.device))
+                loaded_gram += 1
+    print(f"  Caricati {loaded_gram} pesi GramDet dal checkpoint.")
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     tokenizer.pad_token = tokenizer.eos_token
 
-    # Se il checkpoint contiene layer LLaMA puri (non convertiti), converto
-    # Controlla se il modello e' gia' ibrido
-    first_layer_attn = model.model.layers[0].self_attn
-    is_already_hybrid = hasattr(first_layer_attn, 'gram_window')
-
-    if not is_already_hybrid:
-        print(f"  {YELLOW}[INFO]{NC} Checkpoint non ibrido — converto con gram_window={gram_window}")
-        model, converted = convert_llama_to_hybrid(
-            model,
-            simplicial_indices=SIMPLICIAL_INDICES,
-            alpha=0.01,
-            w1=32,
-            w2=256,
-            attention_type="gram_det",
-            gram_window=gram_window,
-        )
-        print(f"  Layer convertiti: {converted}")
-
-        # Carica pesi GramDet dal checkpoint (sovrascrive i layer convertiti)
-        # Cerca i pesi gram_det salvati
-        gram_det_pattern = os.path.join(os.path.dirname(ckpt_path), "gram_det_weights", "*.safetensors")
-        gram_det_file = glob.glob(gram_det_pattern)
-        gram_det_idx = os.path.join(os.path.dirname(ckpt_path), "gram_det_weights", "model.safetensors.index.json")
-
-        if gram_det_file:
-            from safetensors.torch import load_file as safetensors_load
-            print(f"  Carico pesi GramDet da {os.path.dirname(gram_det_file[0])}")
-            state_dict = {}
-            for sf in gram_det_file:
-                state_dict.update(safetensors_load(sf))
-            loaded = 0
-            for name, param in model.named_parameters():
-                if name in state_dict and any(f"layers.{i}." in name for i in SIMPLICIAL_INDICES):
-                    param.data.copy_(state_dict[name].to(param.device))
-                    loaded += 1
-            print(f"  Caricati {loaded} pesi GramDet dal checkpoint.")
-
-    # model.to(device) non serve — device_map="auto" gestisce gia' il placement
     return model, tokenizer
 
 
