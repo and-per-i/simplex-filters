@@ -141,7 +141,7 @@ def _install_hooks(model, indices: list) -> list[dict]:
                 output = (attn_weights.unsqueeze(-1) * v_hadamard).sum(dim=-2)
 
                 output = self.o_proj(output.transpose(1, 2).reshape(B, N, H * d))
-                return output, None
+                return output
 
             return hooked_forward
 
