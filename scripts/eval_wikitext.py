@@ -40,14 +40,20 @@ NC = "\033[0m"
 def load_model(ckpt_path: str, gram_window: int = 8, device: str = "cuda") -> tuple:
     """
     Carica modello dal checkpoint GramDet.
-    Stessa logica di train_hybrid.py resume: carica checkpoint ignorando mismatch,
-    poi converti in GramDet, poi ricarica pesi GramDet dal ckpt_state.
+    Replica esattamente la logica di diagnose_checkpoint.py load_model_from_ckpt:
+    1. Carica safetensors dal checkpoint
+    2. Carica LLaMA FRESCO da HuggingFace (evita mismatch shape)
+    3. Copia tutti i pesi LLaMA backbone che matchano per shape
+    4. Converti in GramDet (crea [4096,4096] dimensioni corrette)
+    5. Copia i pesi GramDet addestrati dal checkpoint
     """
     from safetensors.torch import load_file as safetensors_load
     from src.modeling.convert_to_hybrid import convert_llama_to_hybrid
-    from src.modeling.gram_det_attention import GramDetAttention
 
-    # 1. Carica state_dict dal checkpoint
+    SIMPLICIAL_INDICES = [16, 20, 24, 28]
+    MODEL_NAME = "meta-llama/Llama-3.1-8B"
+
+    # 1. Carica state_dict dal checkpoint (safetensors)
     ckpt_state = {}
     safetensor_files = glob.glob(os.path.join(ckpt_path, "*.safetensors"))
     if not safetensor_files:
@@ -61,35 +67,42 @@ def load_model(ckpt_path: str, gram_window: int = 8, device: str = "cuda") -> tu
     for sf in safetensor_files:
         ckpt_state.update(safetensors_load(sf))
 
-    # 2. Carica checkpoint direttamente (lascia mismatch — verranno ricopiati)
+    # 2. Carica LLaMA fresco da HuggingFace (evita mismatch shape)
     model = AutoModelForCausalLM.from_pretrained(
-        ckpt_path,
+        MODEL_NAME,
         torch_dtype=torch.bfloat16,
         device_map="auto",
         attn_implementation="eager",
-        local_files_only=True,
-        ignore_mismatched_sizes=True,
     )
 
-    # 3. Converti in GramDet (cambia architettura layer 16,20,24,28)
+    # 3. Copia TUTTI i pesi LLaMA che matchano per shape
+    loaded_match = 0
+    for name, param in model.named_parameters():
+        if name in ckpt_state and ckpt_state[name].shape == param.shape:
+            param.data.copy_(ckpt_state[name].to(param.device))
+            loaded_match += 1
+    print(f"  Caricati {loaded_match} pesi backbone dal checkpoint (match per shape).")
+
+    # 4. Converti in ibrido (architettura GramDet)
     model, converted = convert_llama_to_hybrid(
         model,
-        simplicial_indices=[16, 20, 24, 28],
+        simplicial_indices=SIMPLICIAL_INDICES,
         alpha=0.01,
         w1=32,
         w2=256,
         attention_type="gram_det",
         gram_window=gram_window,
     )
+    print(f"  Layer convertiti: {converted}")
 
-    # 4. Sovrascrivi TUTTI i pesi GramDet dal checkpoint
-    #    Dopo la conversione, le shape coincidono ([4096,4096] come salvato)
-    loaded = 0
+    # 5. Carica pesi GramDet dal checkpoint (shape match perche' convertiti)
+    loaded_gram = 0
     for name, param in model.named_parameters():
-        if name in ckpt_state and ckpt_state[name].shape == param.shape:
-            param.data.copy_(ckpt_state[name].to(param.device))
-            loaded += 1
-    print(f"  Caricati {loaded} pesi totali dal checkpoint (match per shape).")
+        if name in ckpt_state and any(f"layers.{i}." in name for i in SIMPLICIAL_INDICES):
+            if ckpt_state[name].shape == param.shape:
+                param.data.copy_(ckpt_state[name].to(param.device))
+                loaded_gram += 1
+    print(f"  Caricati {loaded_gram} pesi GramDet addestrati (match per shape).")
 
     model.eval()
     return model
