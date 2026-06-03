@@ -516,6 +516,7 @@ def load_model_from_ckpt(ckpt_path: Optional[str], gram_window: int, device: str
         device_map="cuda",
         attn_implementation="eager",
         local_files_only=True,
+        ignore_mismatched_sizes=True,
     )
     model.train()
 
