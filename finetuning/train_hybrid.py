@@ -216,7 +216,7 @@ def train(config: dict):
     # ======================================================================
     # RESUME: Carica pesi + optimizer da checkpoint precedente
     # ======================================================================
-    resume_path = config.get("resume_path", None)
+    resume_path = config.get("resume", None)
     resume_step = 0
     if resume_path is not None:
         from safetensors.torch import load_file as safetensors_load
