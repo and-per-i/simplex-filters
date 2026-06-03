@@ -61,8 +61,10 @@ def frechet_mean_planes(
         P_mean = (P_mean + P_mean.T) / 2.0
         
         # 2. SVD e proiezione su Gr(2,d): top-2 autovettori
-        U_mean, S, Vh = torch.linalg.svd(P_mean, full_matrices=False)
-        U_mean = U_mean[:, :2]  # [d, 2]
+        # SVD non supporta BFloat16 su CUDA
+        P_mean_f32 = P_mean.float()
+        U_mean_f32, S_f32, Vh_f32 = torch.linalg.svd(P_mean_f32, full_matrices=False)
+        U_mean = U_mean_f32[:, :2].to(P_mean.dtype)  # [d, 2]
         P_mean = U_mean @ U_mean.T  # [d, d]
         
         # Convergenza
@@ -169,8 +171,9 @@ def frechet_mean_queries(
     M = (Q_norm.T @ Q_norm) / Q_norm.shape[0]
     
     # SVD → top-1 autovettore = query media
-    U, S, Vh = torch.linalg.svd(M, full_matrices=False)
-    q_mean = U[:, 0]
+    # SVD non supporta BFloat16 su CUDA
+    U, S, Vh = torch.linalg.svd(M.float(), full_matrices=False)
+    q_mean = U[:, 0].to(M.dtype)
     
     return q_mean
 
