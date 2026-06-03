@@ -505,7 +505,7 @@ def load_model_from_ckpt(ckpt_path: Optional[str], gram_window: int, device: str
 
         tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
         tokenizer.pad_token = tokenizer.eos_token
-        model.to(device)
+        # model.to(device) non serve — device_map="auto" gestisce gia' il placement
         return model, tokenizer
 
     print(f"\n  {BOLD}Caricamento modello da checkpoint:{NC} {ckpt_path}")
@@ -559,7 +559,7 @@ def load_model_from_ckpt(ckpt_path: Optional[str], gram_window: int, device: str
                     loaded += 1
             print(f"  Caricati {loaded} pesi GramDet dal checkpoint.")
 
-    model.to(device)
+    # model.to(device) non serve — device_map="auto" gestisce gia' il placement
     return model, tokenizer
 
 
@@ -593,6 +593,8 @@ def main():
         if not os.path.exists(ckpt_path):
             print(f"  {YELLOW}[WARN]{NC} Checkpoint {ckpt_path} non trovato. Cerco l'ultimo...")
             ckpt_path = _find_latest_checkpoint("./checkpoints/gram_det/")
+            if ckpt_path is None:
+                ckpt_path = _find_latest_checkpoint("./gram_det/")
             if ckpt_path is not None:
                 print(f"  Checkpoint auto-rilevato: {ckpt_path}")
         else:
