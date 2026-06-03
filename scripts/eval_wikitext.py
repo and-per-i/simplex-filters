@@ -186,13 +186,14 @@ def main():
 
     print(f"Caricamento Wikitext-2 test fino a {args.max_samples} samples validi...", end=" ", flush=True)
     # Wikitext-2 raw ha molti campioni corti (< seq_length) che vengono saltati.
-    # Continuiamo a iterare finche' non abbiamo abbastanza samples validi.
+    # Filtriamo usando tokenizzatore reale per lunghezza esatta.
     min_length = args.seq_length
     raw_ds = get_wikitext2_test(max_samples=None)  # streaming
     dataset = []
     for sample in raw_ds:
         text = sample.get("text", "")
-        if len(text.strip()) < min_length * 2:  # stima: 2 char/token
+        enc = tokenizer(text, truncation=False)
+        if len(enc["input_ids"]) < min_length:
             continue
         dataset.append(sample)
         if len(dataset) >= args.max_samples:
