@@ -27,6 +27,9 @@ from typing import Optional
 import torch
 import torch.nn.functional as F
 
+# Aggiungi root del progetto al path (serve per importare src/)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
 # ==========================================================================
 # ANSI colors
 # ==========================================================================
