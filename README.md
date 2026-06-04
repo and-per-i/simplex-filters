@@ -27,9 +27,8 @@ I checkpoint addestrati sono disponibili su HuggingFace:
 
 | Modello | Descrizione | Link |
 |---|---|---|
-| `llama-gramdet-6k` | GramDet, step 6000, gram_window=8, scaling=10.0 | [🤗](https://huggingface.co/and-per/llama-gramdet-6k) |
-| `llama-gramdet-final` | GramDet, step 10000 (stesso training) | [🤗](https://huggingface.co/and-per/llama-gramdet-final) |
-| `llama-gramdet-8k` | GramDet, step 8000 (intermedio) | [🤗](https://huggingface.co/and-per/llama-gramdet-8k) |
+| `llama-trilinear-step4000` | Trilineare, step 4000, w1=32, w2=256 | [🤗](https://huggingface.co/and-per/llama-trilinear-step4000) |
+| `llama-gram-det-step6000` | GramDet, step 6000, gram_window=8, scaling=10.0 | [🤗](https://huggingface.co/and-per/llama-gram-det-step6000) |
 
 **Profilo HuggingFace**: [https://huggingface.co/and-per](https://huggingface.co/and-per)
 
