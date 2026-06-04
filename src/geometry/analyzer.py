@@ -18,6 +18,14 @@ from src.geometry.grassmann import (
 )
 
 
+# Baseline Monte Carlo per varianza geodesica su Gr(2, d)
+# Calcolata con scripts/grassmann_baseline.py --dim <d> --runs 10
+GRASSMANN_BASELINE = {
+    64: 3.8507,   # Gr(2,64) — LLaMA 3.2 1B (head_dim=64)
+    128: 4.0906,  # Gr(2,128) — LLaMA 3.1 8B (head_dim=128)
+}
+
+
 def analyze_query_distribution(
     q_all: torch.Tensor,
     U_mean: torch.Tensor,
@@ -274,8 +282,18 @@ def analyze_checkpoint(
             "query_anisotropy_ratio": query_dist["query_anisotropy_ratio"],
         }
         
+        # Baseline e riduzione percentuale (per head_dim)
+        baseline = GRASSMANN_BASELINE.get(head_dim, None)
+        if baseline:
+            reduction_pct = (baseline - var_g.item()) / baseline * 100
+            results[layer_idx]["baseline_variance"] = baseline
+            results[layer_idx]["reduction_pct"] = round(reduction_pct, 1)
+
         if verbose:
             print(f"    Varianza geodesica:  {var_g.item():.6f}")
+            if baseline:
+                print(f"    Baseline random:     {baseline:.4f} (Gr(2,{head_dim}))")
+                print(f"    Riduzione vs random: {reduction_pct:.1f}%")
             print(f"    ||P q̄||:            {proj_norm.item():.6f}")
             print(f"    q̄ dalla normale:     {angle_fn_deg:.1f}° (0° = q ∥ normale → volume massimo)")
             print(f"    q̄ dal piano:         {angle_fp_deg:.1f}° (90° = q ⟂ piano → volume massimo)")
