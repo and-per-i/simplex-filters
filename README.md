@@ -1,75 +1,194 @@
 # simplex-filters
 
-## 2-Simplicial Attention: Geometrica e KV Cache Eviction
+**2-Simplicial Attention: Geometria sulla Grassmanniana e Filtraggio della KV Cache**
 
-Implementazione di **attenzione 2-simpliciale** per Transformer, con analisi geometrica basata sulla **Grassmanniana** e **KV cache eviction** guidata dal **Q-filter**. Parte della tesi di laurea.
+> Progetto di tesi: implementazione di attenzione 2-simpliciale per Transformer (trilineare e determinante di Gram), analisi geometrica dei piani di chiavi sulla Grassmanniana, e filtraggio della KV cache tramite Q-filter score.
 
-## Architettura
+[![HuggingFace Models](https://img.shields.io/badge/🤗_HuggingFace-and--per-blue)](https://huggingface.co/and-per)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
+---
+
+## Perché questo progetto
+
+L'attenzione standard dei Transformer è un **prodotto scalare** tra query Q e key K (forma bilineare). Questo progetto esplora due generalizzazioni a forma **trilineare**:
+
+| Tipo | Formula | Cosa misura |
+|---|---|---|
+| **Dot-product** (standard) | ⟨q, k⟩ | Similarità tra 2 vettori |
+| **Trilineare** | ⟨q, k₁, k₂⟩ | Interazione a 3 corpi |
+| **Gram determinante** | det(Gram(q, k₁, k₂)) | Volume del parallelepipedo span(q, k₁, k₂) |
+
+La versione **GramDet** ha un'interpretazione geometrica diretta: più il determinante è alto, più i tre vettori sono linearmente indipendenti — e quindi trasportano informazione complementare.
+
+## Modelli pre-addestrati
+
+I checkpoint addestrati sono disponibili su HuggingFace:
+
+| Modello | Descrizione | Link |
+|---|---|---|
+| `llama-gramdet-6k` | GramDet, step 6000, gram_window=8, scaling=10.0 | [🤗](https://huggingface.co/and-per/llama-gramdet-6k) |
+| `llama-gramdet-final` | GramDet, step 10000 (stesso training) | [🤗](https://huggingface.co/and-per/llama-gramdet-final) |
+| `llama-gramdet-8k` | GramDet, step 8000 (intermedio) | [🤗](https://huggingface.co/and-per/llama-gramdet-8k) |
+
+**Profilo HuggingFace**: [https://huggingface.co/and-per](https://huggingface.co/and-per)
+
+---
+
+## Installazione
+
+```bash
+git clone https://github.com/and-per-i/simplex-filters.git
+cd simplex-filters
+pip install -r requirements.txt
+pip install -e simplicial_attention/   # kernel opzionali Triton/TLX
 ```
-simplex-filters/
-├── main.py                              # Entry point (6 modalità)
-├── src/
-│   ├── modeling/                        # Attenzione 2-simpliciale
-│   │   ├── simplicial_attention.py       # Trilineare (kernel Triton, 520 TFLOPS)
-│   │   ├── gram_det_attention.py         # Gram Det vettorizzato (puro PyTorch)
-│   │   └── convert_to_hybrid.py          # Converte LLaMA in ibrido
-│   ├── geometry/                         # Analisi Grassmanniana
-│   │   ├── plane.py                      # Piano via SVD, angoli, distanza geodesica
-│   │   ├── grassmann.py                  # Media di Fréchet, Q-filters query mean
-│   │   ├── hooks.py                      # Forward hook per K1/K2/Q
-│   │   └── analyzer.py                   # Pipeline analisi geometrica completa
-│   └── kv_cache/                         # KV Cache eviction
-│       ├── qfilter_score.py              # Score = √(σ₁²⟨k,e₂⟩² + σ₂²⟨k,e₁⟩²)
-│       ├── eviction.py                   # Top-B eviction + random baseline
-│       ├── benchmark.py                  # Perplexity vs budget B
-│       └── ruler/niah_benchmark.py       # RULER NIAH (8K/16K)
-├── finetuning/                           # Training su C4
-│   ├── config.yaml                       # Iperparametri
-│   ├── train_hybrid.py                   # Loop manuale + 3 LR gruppi
-│   └── utils/                            # Data, optimizer, metrics, wandb
-├── tests/                                # 70+ test
-└── simplicial_attention/                 # Kernel FBGEMM (da Meta)
+
+**Requisiti**: Python 3.10+, CUDA GPU con ≥48 GB VRAM (per LLaMA 3.1 8B in bfloat16), `HF_TOKEN` per scaricare i pesi da HuggingFace.
+
+```bash
+export HF_TOKEN=hf_il_tuo_token
 ```
 
-## Cosa fa
+---
+
+## Cosa fa il progetto
 
 ### 1. Due meccanismi di attenzione 2-simpliciale
 
-Sostituisce l'attenzione dot-product standard in layer selezionati di LLaMA 3.1 8B con forme trilineari — sia la **trilineare classica** (Q·K1·K2) sia il **determinante di Gram** (det di Gram(q, k1, k2)). Convertendo 4 layer su 32 in modalità ibrida, si ottiene un modello che calcola interazioni a tre corpi mantenendo il 96.75% dei parametri congelati.
+Sostituisce l'attenzione dot-product standard nei layer {16, 20, 24, 28} di LLaMA 3.1 8B con due varianti:
 
-### 2. Analisi geometrica sulla Grassmanniana
+```python
+from src.modeling.gram_det_attention import GramDetAttention
 
-Ogni coppia (k1, k2) prodotta dall'attenzione definisce un **punto sulla Grassmanniana Gr(2,d)** — lo spazio dei piani di dimensione 2 in ℝᵈ. L'analisi calcola:
+# GramDet: score = det(Gram(q, k1, k2)) con finestra di 17 token
+# k_proj e v_proj vengono espansi da 8 a 32 teste (GQA 4:1)
+```
 
-- **Piano medio**: media di Fréchet iterativa sulla Grassmanniana (10 iterazioni, SVD a ogni passo)
-- **Varianza geodesica**: √(θ₁² + θ₂²) dove θᵢ sono gli angoli principali tra ogni piano e il piano medio. Misura quanto i piani sono dispersi.
-- **Q-filter score**: √(σ₁²·⟨k, e₂⟩² + σ₂²·⟨k, e₁⟩²) — pesa la proiezione di ogni chiave sul piano medio usando i valori singolari delle query. Chiavi con score alto contribuiscono di più al volume del parallelepipedo span(q, k1, k2).
-- **Relazione query-piano**: ||P q̄|| — l'angolo tra la query media e il piano. Se l'angolo è ~90° (query quasi perpendicolare al piano), il volume dello spanned parallelepipedo è massimizzato.
-- **Anisotropia delle query**: rapporto σ₁/σ₂ della distribuzione delle query proiettate sul piano medio. σ₁ ≫ σ₂ significa distribuzione concentrata lungo un asse.
+La conversione è gestita da `convert_llama_to_hybrid()`:
+- **Trilineare** (`--attention-type simplicial`): 5 proiezioni (q, k1, k2, v1, v2, o), training su K2/V2 con α·noise
+- **GramDet** (`--attention-type gram_det`): 3 proiezioni (q, k, v, o), training diretto su q/k/v/o
 
-### 3. KV Cache Eviction
+### 2. Training su C4
 
-Lo score Q-filter (calcolato dall'analisi geometrica) guida la **eviction della KV cache**: in ogni passo, solo le top-B chiavi con Q-filter score più alto vengono mantenute nella sliding window K1 (w1=32). Le chiavi eliminate vengono azzerate prima del kernel di attenzione, riducendo il costo computazionale dell'attenzione 2-simpliciale. Il benchmark confronta:
+Il training finetuna **solo** i 4 layer simpliciali (268M parametri su 8B totali = 3.3%) su C4 streaming:
 
-- **Perplexity** su C4 validation a vari budget B (100%, 50%, 30%, 10%)
-- **RULER NIAH** (Needle-In-A-Haystack) a 8K e 16K token, verificando se il modello recupera correttamente un "ago" nel "pagliaio" anche con eviction.
+```bash
+python finetuning/train_hybrid.py --attention-type gram_det        # GramDet
+python finetuning/train_hybrid.py --attention-type gram_det --resume ./checkpoints/checkpoint-6000  # resume
+```
 
-Il contributo della tesi è geometrico, non di performance assoluta: ciò che conta non è la PPL assoluta ma la **differenza relativa** tra Q-filter e random eviction sullo stesso modello, e la **struttura geometrica** dei piani e delle query.
+Parametri chiave in `finetuning/config.yaml`:
+- `gram_window: 8` — finestra di 17 token, 153 coppie per query
+- `scaling: 10.0` — amplifica la differenza tra determinanti per softmark selettiva
+- `lr_k2v2: 5e-4`, `lr_k1v1: 2e-5` — LR diversa per simpliciali vs backbone
+- `warmup_steps: 100`, `max_steps: 10000`
 
-## Tests
+### 3. Diagnostica dell'attenzione
+
+Per verificare che l'attenzione funzioni correttamente PRIMA del training:
+
+```bash
+python scripts/diagnose_checkpoint.py --gram-window 8 --section attention
+```
+
+Metriche diagnostiche:
+- **Entropia**: distribuzione dei pesi softmax sulle 153 coppie (5.03 = uniforme, 0 = one-hot)
+- **Max weight medio**: peso massimo medio per token
+- **Gini**: coefficiente di concentrazione (0 = uniforme, 1 = one-hot)
+- **Pre-softmax mean**: grandezza dei logit prima della softmax
+
+### 4. Analisi geometrica sulla Grassmanniana
+
+Ogni coppia di chiavi (kⱼ₁, kⱼ₂) definisce un **punto sulla Grassmanniana Gr(2,128)** — lo spazio dei piani 2D in ℝ¹²⁸. L'analisi geometrica calcola:
+
+```bash
+python main.py --analyze ./checkpoints/checkpoint-6000 --attention-type gram_det
+```
+
+**Cosa misura**:
+
+| Metrica | Formula | Cosa dice |
+|---|---|---|
+| **Varianza geodesica** | (1/N)Σ d_g(Uᵢ, U_mean)² | Quanto sono dispersi i piani (4.09 = random, <2.5 = strutturati) |
+| **Angolo query-piano** | arcsin(‖P q̄‖ / ‖q̄‖) | Quanto la query media è ortogonale al piano (90° = volume massimo) |
+| **Anisotropia σ₁/σ₂** | dalla SVD delle proiezioni | Se la distribuzione è concentrata lungo un asse |
+| **Q-filter score** | √(σ₁²⟨k,e₂⟩² + σ₂²⟨k,e₁⟩²) | Peso della chiave per l'evizione |
+
+**Risultati principali** (confronto con baseline Monte Carlo):
+
+| Modello | Varianza geodesica | Riduzione vs random |
+|---|---|---|
+| Random Haar (Gr(2,128)) | 4.09 ± 0.004 | — |
+| Trilineare | ~3.1 | ~24% |
+| **GramDet** | **2.34–2.52** | **~40%** |
+
+GramDet sviluppa quasi il **doppio della struttura geometrica** del trilineare, con specializzazione gerarchica per profondità: layer intermedi cercano complanarità (det≈0), layer profondi cercano volume massimo (det≈1).
+
+### 5. Valutazione PPL out-of-domain
+
+```bash
+python scripts/eval_wikitext.py --checkpoints ./checkpoints/checkpoint-6000 --max-samples 50 --seq-length 256
+```
+
+**Risultato**: PPL 868K su Wikitext-2 → il modello NON generalizza fuori dal dominio di training. Il collo di bottiglia è pratico (3.3% parametri trainabili), non teorico.
+
+### 6. Baseline Monte Carlo per Grassmanniana
+
+```bash
+python scripts/grassmann_baseline.py --dim 128 --n-planes 320 --runs 5
+```
+
+Genera piani random su Gr(2,128) e calcola la varianza geodesica attesa per confronto.
+
+---
+
+## Struttura del progetto
 
 ```
-# Tutti i test CPU
-python -m pytest tests/ -k "not requires_gpu" -v
-
-# Tutti i test (GPU richiesto per alcuni)
-./tests/run_all.sh
+simplex-filters/
+├── main.py                              # Entry point (7 modalità: test, finetune, analyze, benchmark, ruler, test-checkpoint, both)
+├── finetuning/
+│   ├── config.yaml                       # Iperparametri (gram_window, scaling, LR, warmup)
+│   ├── train_hybrid.py                   # Training → C4 streaming, checkpoint, resume
+│   └── utils/                            # Data loader, optimizer (3 gruppi), wandb logging, metrics
+├── src/
+│   ├── modeling/                         # Attenzione 2-simpliciale
+│   │   ├── simplicial_attention.py        # Trilineare (kernel Triton, 520 TFLOPS)
+│   │   ├── gram_det_attention.py          # Gram Det vettorizzato (puro PyTorch, finestra, coppie)
+│   │   └── convert_to_hybrid.py           # Converte LLaMA → ibrido (espansione GQA 4:1)
+│   ├── geometry/                          # Analisi Grassmanniana
+│   │   ├── plane.py                       # SVD, proiettore, angoli principali, distanza geodesica
+│   │   ├── grassmann.py                   # Media di Fréchet, varianza geodesica, Q-filters query mean
+│   │   ├── hooks.py                       # Forward hook per estrarre K1/K2/Q dai layer
+│   │   └── analyzer.py                    # Pipeline completa (5 batch × 2 testi × 256 token)
+│   └── kv_cache/                          # KV Cache eviction (da completare dopo training)
+│       ├── qfilter_score.py               # Score basato su geometria del piano
+│       ├── eviction.py                    # Top-B eviction
+│       └── benchmark.py                   # Perplexity vs budget
+├── scripts/
+│   ├── diagnose_checkpoint.py             # Diagnostica attenzione (entropia, Gini, softmax)
+│   ├── eval_wikitext.py                   # PPL out-of-domain su Wikitext-2
+│   └── grassmann_baseline.py              # Monte Carlo per baseline random
+├── tests/                                 # 70+ test (strutturali, forward/backward, numerici)
+└── simplicial_attention/                  # Kernel FBGEMM/Triton/TLX (da Meta, opzionali)
 ```
+
+---
+
+## Risultati sperimentali (sintesi)
+
+| Modello | Varianza geodesica | Specializzazione | PPL Wikitext-2 |
+|---|---|---|---|
+| Random baseline | 4.09 | — | — |
+| Trilineare | ~3.1 | Nessuna | — |
+| **GramDet** | **2.34–2.52** | **Layer 20∥piano, Layer 28⟂piano** | **868K** (non generalizza) |
+
+**Interpretazione**: GramDet sviluppa struttura geometrica genuina e specializzazione gerarchica, ma 268M parametri (3.3%) non bastano per generalizzare fuori dal dominio di training. La tesi documenta sia il successo geometrico che la limitazione pratica.
 
 ## Citazione
 
 Basato su:
 - Clift et al., "Logic and the 2-Simplicial Transformer", 2019
 - Roy et al., "Fast and Simplex: 2-Simplicial Attention in Triton", 2025
-- Godey et al., "Q-filters", 2024
+- Godey et al. (Q-filters), 2024
