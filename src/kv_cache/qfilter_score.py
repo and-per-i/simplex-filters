@@ -1,17 +1,21 @@
 """
 qfilter_score.py — Calcolo dello score di eviction Q-filter.
 
-Formula:
+Formula per trilineare (geometria per-token, K1 != K2):
     Score(k_j) = sqrt(σ₁² · ⟨k_j, e₂⟩² + σ₂² · ⟨k_j, e₁⟩²)
+
+Formula per GramDet (geometria per-coppia, K1 == K2):
+    Score(k_j) = ‖k_j - P̄ k_j‖  (componente ortogonale al piano medio)
 
 Dove:
     σ₁, σ₂ = valori singolari della distribuzione query nel piano medio (anisotropia)
     e₁, e₂ = vettori della base del piano medio (colonne di U_mean ∈ R^{d×2})
-    
-Interpretazione:
-    Lo score pesa la proiezione della chiave k_j sul piano medio usando i
-    valori singolari delle query. Piu' lo score e' alto, piu' quella chiave
-    contribuisce al volume del parallelepipedo (q, k1, k2).
+    P̄ = proiettore ortogonale sul piano medio (U_mean @ U_mean^T)
+
+Nota:
+    La formula per GramDet e' diversa perche' premia le chiavi ATIPICHE
+    (ortogonali al piano medio), non quelle tipiche. Validato empiricamente:
+    r=-0.27 con formula classica vs r=+0.61 con formula ortogonale.
 """
 
 import torch
@@ -24,27 +28,57 @@ def qfilter_score(
     U_mean: torch.Tensor,
 ) -> torch.Tensor:
     """
-    Calcola il Q-filter score per ogni chiave.
+    Q-filter score per attenzione TRILINEARE (geometria per-token).
+    
+    Pesa la proiezione della chiave sul piano medio usando i valori singolari
+    delle query. Score alto = chiave vicina al piano medio (tipica).
+    Formula: sqrt(σ₁² · ⟨k, e₂⟩² + σ₂² · ⟨k, e₁⟩²)
 
     Args:
-        k: chiavi [N, d] (batch di vettori d-dimensionali)
-        sigma1: σ₁ dall'analisi geometrica (scalar)
-        sigma2: σ₂ dall'analisi geometrica (scalar)
-        U_mean: base del piano medio [d, 2] (colonne e₁, e₂)
+        k: chiavi [N, d]
+        sigma1: σ₁ dall'analisi geometrica
+        sigma2: σ₂ dall'analisi geometrica
+        U_mean: base del piano medio [d, 2]
 
     Returns:
         scores: [N] score per ogni chiave
     """
-    # Proietta k sul piano medio: [N, 2] = k @ U_mean
     k_proj = k @ U_mean  # [N, 2]
-
-    # Separa le componenti lungo e₁ e e₂
     k_e1 = k_proj[:, 0]  # [N]
     k_e2 = k_proj[:, 1]  # [N]
-
-    # Score pesato: sqrt(σ₁² · k_e2² + σ₂² · k_e1²)
     scores = torch.sqrt(sigma1**2 * k_e2**2 + sigma2**2 * k_e1**2)
+    return scores
 
+
+def qfilter_score_orthogonal(
+    k: torch.Tensor,
+    U_mean: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Q-filter score per attenzione GRAMDET (geometria per-coppia).
+    
+    Calcola la componente ortogonale di ogni chiave al piano medio.
+    Score alto = chiave atipica (lontana dal piano tipico).
+    Formula: ‖k - P̄ k‖ dove P̄ = U_mean @ U_mean^T
+
+    Validato empiricamente: correlazione Spearman +0.61 vs ground truth
+    (vs -0.27 della formula classica di proiezione).
+
+    Args:
+        k: chiavi [N, d]
+        U_mean: base del piano medio [d, 2]
+
+    Returns:
+        scores: [N] score per ogni chiave
+    """
+    # Proiettore sul piano medio
+    P = U_mean @ U_mean.T  # [d, d]
+    # Componente sul piano: k_proj = k @ P
+    k_proj = k @ P  # [N, d]
+    # Componente ortogonale: k_orth = k - k_proj
+    k_orth = k - k_proj  # [N, d]
+    # Score = norma della componente ortogonale
+    scores = torch.norm(k_orth, dim=-1)  # [N]
     return scores
 
 
@@ -56,7 +90,7 @@ def qfilter_score_single(
     e2: torch.Tensor,
 ) -> torch.Tensor:
     """
-    Versione per singola chiave con vettori espliciti.
+    Versione per singola chiave con vettori espliciti (TRILINEARE).
 
     Args:
         k: chiave [d]
@@ -88,8 +122,6 @@ def top_k_indices(
     """
     N = scores.shape[0]
     B = max(1, int(N * budget))
-
-    # Ordina per score decrescente
     indices = torch.argsort(scores, descending=True)[:B]
     return indices
 
