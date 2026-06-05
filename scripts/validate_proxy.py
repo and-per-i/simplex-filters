@@ -226,18 +226,22 @@ def compute_true_score(
 def compute_proxy_score(
     k_vectors: torch.Tensor,
     q_vectors: torch.Tensor,
+    proxy_type: str = "orthogonal",
 ) -> torch.Tensor:
     """
-    Calcola lo score proxy (Q-filter) usando il piano medio della Grassmanniana.
+    Calcola lo score proxy usando il piano medio della Grassmanniana.
+    Due modalita':
+      - "projection": Q-filter classico proiettato sul piano medio
+      - "orthogonal": componente ortogonale al piano medio (per GramDet)
 
     1. Estrae piani dalle coppie di K (stessa logica di batch_to_planes_gram_det)
     2. Calcola Frechet mean → piano medio Ū
-    3. Calcola Q-filter score per ogni chiave: √(σ₁²·⟨k,e₂⟩² + σ₂²·⟨k,e₁⟩²)
-
-    Hp: non abbiamo bisogno di training — si calcola tutto dai vettori K e Q.
+    3. Calcola proxy score
 
     Restituisce:
-        proxy_scores: [N] — score Q-filter per ogni chiave
+        proxy_scores: [N] — score proxy per ogni chiave
+        U_mean: piano medio [d, 2]
+        sigma1, sigma2: valori singolari (solo per projection, 0 per orthogonal)
     """
     from src.geometry.plane import plane_projector_and_basis
     from src.geometry.grassmann import frechet_mean_planes, geodesic_variance, q_filters_query_mean
@@ -266,16 +270,23 @@ def compute_proxy_score(
     # 2. Media di Frechet
     U_mean, P_mean = frechet_mean_planes(U_list, n_iter=10)
 
-    # 3. Valori singolari dalla distribuzione delle query
-    q_mean = q_filters_query_mean(q_vectors)
+    if proxy_type == "orthogonal":
+        # Score ortogonale: norma della componente di k_j ortogonale al piano medio
+        # P = U U^T  →  k_proj = k @ P  →  k_orth = k - k_proj
+        P = U_mean @ U_mean.T  # [d, d] proiettore sul piano
+        k_proj = k_vectors @ P  # [N, d]
+        k_orth = k_vectors - k_proj  # [N, d]
+        proxy_scores = torch.norm(k_orth, dim=-1)  # [N]
+        sigma1, sigma2 = 0.0, 0.0
+    else:
+        # Q-filter classico: proiezione sul piano medio
+        q_mean = q_filters_query_mean(q_vectors)
 
-    # Proiettiamo tutte le query sul piano medio per ottenere sigma1, sigma2
-    q_proj = U_mean.T @ q_vectors.T  # [2, N]
-    U_svd, sigma, Vh_svd = torch.linalg.svd(q_proj.float(), full_matrices=False)
-    sigma1, sigma2 = sigma[0].item(), sigma[1].item()
+        q_proj = U_mean.T @ q_vectors.T  # [2, N]
+        U_svd, sigma, Vh_svd = torch.linalg.svd(q_proj.float(), full_matrices=False)
+        sigma1, sigma2 = sigma[0].item(), sigma[1].item()
 
-    # 4. Q-filter score
-    proxy_scores = qfilter_score(k_vectors.float(), sigma1, sigma2, U_mean.float())
+        proxy_scores = qfilter_score(k_vectors.float(), sigma1, sigma2, U_mean.float())
 
     return proxy_scores, U_mean, sigma1, sigma2
 
@@ -348,6 +359,9 @@ def main():
                         help="Layer da analizzare (default: 28)")
     parser.add_argument("--seq-length", type=int, default=256)
     parser.add_argument("--num-batches", type=int, default=3)
+    parser.add_argument("--proxy-type", type=str, default="orthogonal",
+                        choices=["projection", "orthogonal"],
+                        help="Tipo di proxy: 'projection' (Q-filter) o 'orthogonal' (norma ortogonale)")
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -379,9 +393,12 @@ def main():
 
     # PROXY SCORE — Q-filter dal piano medio
     print(f"\n{BOLD}FASE 2/2: Calcolo PROXY score (Q-filter){NC}")
-    proxy_scores, U_mean, sigma1, sigma2 = compute_proxy_score(k_vectors.to(device), k_vectors.to(device))
+    proxy_scores, U_mean, sigma1, sigma2 = compute_proxy_score(
+        k_vectors.to(device), k_vectors.to(device), proxy_type=args.proxy_type,
+    )
     proxy_scores = proxy_scores.cpu()
-    print(f"  PROXY score calcolato: σ₁={sigma1:.4f}, σ₂={sigma2:.4f}")
+    proxy_label = "ortogonale (∥k − P̄k∥)" if args.proxy_type == "orthogonal" else "proiezione (Q-filter)"
+    print(f"  PROXY score ({proxy_label}): σ₁={sigma1:.4f}, σ₂={sigma2:.4f}")
 
     # Metriche di correlazione
     print(f"\n{BOLD}{'='*65}{NC}")
