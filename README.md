@@ -185,16 +185,18 @@ simplex-filters/
 
 ### Validazione del proxy
 
-Il proxy del piano medio è stato testato empiricamente sul layer 28 GramDet:
+Il proxy del piano medio è stato testato empiricamente sul layer 28 per entrambe le varianti, confrontando true score (contributo medio di ogni chiave ai pesi softmax sulle coppie) con proxy score dal piano medio di Fréchet:
 
-| Proxy | Formula | Pearson r | Spearman ρ | Validità |
+| Variante | Proxy | Pearson r | Spearman ρ | Validità |
 |---|---|---|---|---|
-| Q-filter (proiezione) | √(σ₁²·⟨k,e₂⟩² + σ₂²·⟨k,e₁⟩²) | -0.27 | -0.23 | ❌ Anti-correlato |
-| **Ortogonale** | **‖k − P̄k‖** | **+0.61** | **~+0.6** | ✅ Corretto |
+| **GramDet** | Proiezione Q-filter | -0.27 | -0.23 | 🔴 Anti-correlato |
+| **GramDet** | **Ortogonale (‖k − P̄k‖)** | **+0.61** | **~+0.6** | ✅ Valido |
+| **Trilineare** | Proiezione Q-filter | -0.36 | -0.41 | 🔴 Anti-correlato |
+| **Trilineare** | **Ortogonale (‖k − P̄k‖)** | **+0.46** | **+0.50** | 🟡 Parziale |
 
-GramDet premia le chiavi **atipiche** (ortogonali al piano medio), non quelle tipiche. Il proxy corretto è la componente ortogonale. Due funzioni distinte in `src/kv_cache/qfilter_score.py`:
-- `qfilter_score()` per trilineare
-- `qfilter_score_orthogonal()` per GramDet
+**Pattern comune**: in entrambe le varianti, la proiezione sul piano medio è **anti-correlata** al vero ordine di importanza (le chiavi allineate al piano sono le meno importanti), mentre la **componente ortogonale** è il proxy corretto. Il trilineare ha correlazione inferiore (ρ=0.50 vs 0.61) coerentemente con la maggiore varianza geodesica (~3.1 vs ~2.35) — piani più dispersi → piano medio meno rappresentativo.
+
+**Implicazione**: l'evizione KV per entrambe le varianti dovrebbe selezionare le chiavi con maggiore ‖k − P̄k‖ (atipiche), non minore. La funzione `qfilter_score_orthogonal()` in `src/kv_cache/qfilter_score.py` è il proxy valido per entrambi.
 
 **Interpretazione**: GramDet sviluppa struttura geometrica genuina e specializzazione gerarchica, ma 268M parametri (3.3%) non bastano per generalizzare fuori dal dominio di training. La tesi documenta sia il successo geometrico che la limitazione pratica.
 
