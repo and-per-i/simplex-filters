@@ -248,7 +248,7 @@ def analyze_checkpoint(
             print(f"    Totale vettori: {N}")
         
         # 1. Media di Frechet dei piani (iterativa, 10 iterazioni)
-        U_mean, P_mean = frechet_mean_planes(U_all, n_iter=10)
+        U_mean, P_mean = frechet_mean_planes(U_all, n_iter=10, verbose=verbose)
         
         # 2. Varianza geodesica
         var_g, distances = geodesic_variance(U_all, U_mean)

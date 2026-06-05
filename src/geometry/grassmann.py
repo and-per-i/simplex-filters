@@ -28,6 +28,7 @@ def frechet_mean_planes(
     U_list: torch.Tensor,
     n_iter: int = 10,
     tol: float = 1e-8,
+    verbose: bool = False,
 ) -> torch.Tensor:
     """
     Calcola la media di Frechet sulla Grassmanniana Gr(2,d).
@@ -69,7 +70,11 @@ def frechet_mean_planes(
         
         # Convergenza
         diff = (P_mean - P_old).norm().item()
+        if verbose:
+            print(f"    Fréchet iter {iteration+1}/{n_iter}: diff={diff:.6e}")
         if diff < tol:
+            if verbose:
+                print(f"    ✓ Converged at iter {iteration+1} (diff={diff:.6e} < tol={tol})")
             break
 
     return U_mean, P_mean
