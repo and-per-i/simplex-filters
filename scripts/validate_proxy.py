@@ -106,6 +106,8 @@ def compute_true_score(
         activations = saver.get_data()
         saver.remove_hooks()
 
+        max_pairs = 500  # limite per query (usato sia da GramDet che trilineare)
+
         if attention_type == "gram_det":
             # GramDet: una proiezione K, coppie da posizioni diverse
             K = extract_key_vectors(activations, layer_idx, 'k1', 32, HEAD_DIM).to(device)  # [N_k, d]
@@ -114,7 +116,6 @@ def compute_true_score(
 
             # Per ogni query, calcola score su TUTTE le coppie (j1, j2) nella finestra
             # Limitiamo a max_pairs coppie casuali per query per fattibilità
-            max_pairs = 500
             key_scores = torch.zeros(N, device=device)
 
             # Campiona coppie per ogni query
