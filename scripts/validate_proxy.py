@@ -181,18 +181,18 @@ def compute_true_score(
             N2 = K2.shape[0]
 
             key_scores = torch.zeros(N1, device=device)
-            max_pairs = 500
+            actual_pairs = min(max_pairs, N1 // 2)
             num_queries = Q.shape[0]
 
             for qi in range(num_queries):
                 q = Q[qi]
                 # Campiona coppie
-                idx1 = torch.randperm(N1, device=device)[:max_pairs]
-                idx2 = torch.randperm(N2, device=device)[:max_pairs]
+                idx1 = torch.randperm(N1, device=device)[:actual_pairs]
+                idx2 = torch.randperm(N2, device=device)[:actual_pairs]
 
-                scores_pairs = torch.zeros(max_pairs, device=device)
+                scores_pairs = torch.zeros(actual_pairs, device=device)
 
-                for p in range(max_pairs):
+                for p in range(actual_pairs):
                     j1 = idx1[p]
                     j2 = idx2[p]
                     score = (q * K1[j1] * K2[j2]).sum().abs() * 0.088  # scaling trilineare
@@ -200,7 +200,7 @@ def compute_true_score(
 
                 softmax_weights = F.softmax(scores_pairs, dim=-1)
 
-                for p in range(max_pairs):
+                for p in range(actual_pairs):
                     j1 = idx1[p]
                     key_scores[j1] += softmax_weights[p]
                     # per K2 usiamo un array separato, semplifichiamo usando K1 solo
