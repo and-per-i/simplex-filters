@@ -183,6 +183,19 @@ simplex-filters/
 | Trilineare | ~3.1 | Nessuna | — |
 | **GramDet** | **2.34–2.52** | **Layer 20∥piano, Layer 28⟂piano** | **868K** (non generalizza) |
 
+### Validazione del proxy
+
+Il proxy del piano medio è stato testato empiricamente sul layer 28 GramDet:
+
+| Proxy | Formula | Pearson r | Spearman ρ | Validità |
+|---|---|---|---|---|
+| Q-filter (proiezione) | √(σ₁²·⟨k,e₂⟩² + σ₂²·⟨k,e₁⟩²) | -0.27 | -0.23 | ❌ Anti-correlato |
+| **Ortogonale** | **‖k − P̄k‖** | **+0.61** | **~+0.6** | ✅ Corretto |
+
+GramDet premia le chiavi **atipiche** (ortogonali al piano medio), non quelle tipiche. Il proxy corretto è la componente ortogonale. Due funzioni distinte in `src/kv_cache/qfilter_score.py`:
+- `qfilter_score()` per trilineare
+- `qfilter_score_orthogonal()` per GramDet
+
 **Interpretazione**: GramDet sviluppa struttura geometrica genuina e specializzazione gerarchica, ma 268M parametri (3.3%) non bastano per generalizzare fuori dal dominio di training. La tesi documenta sia il successo geometrico che la limitazione pratica.
 
 ## Citazione
