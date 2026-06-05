@@ -245,6 +245,9 @@ def compute_proxy_score(
 
     N, d = k_vectors.shape
     device = k_vectors.device
+    # Cast a float32 per compatibilita' SVD (il modello usa bfloat16)
+    k_vectors = k_vectors.float()
+    q_vectors = q_vectors.float()
 
     # 1. Costruisci piani da coppie di K
     # Se N è grande, campiona fino a 5000 piani
