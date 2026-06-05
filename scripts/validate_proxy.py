@@ -35,6 +35,7 @@ from scipy.stats import pearsonr, spearmanr
 MODEL_NAME = "meta-llama/Llama-3.1-8B"
 SIMPLICIAL_INDICES = [16, 20, 24, 28]
 HEAD_DIM = 128
+SCALE = 1.0 / math.sqrt(HEAD_DIM)  # ~0.088
 
 RED = "\033[0;31m"
 GREEN = "\033[0;32m"
@@ -69,6 +70,7 @@ def compute_true_score(
         - Estrae K1, K2, Q
         - Score di k1_j = somma softmax su tutte le coppie dove j e' il primo elemento
         - Score di k2_j = somma softmax su tutte le coppie dove j e' il secondo elemento
+        - Concatena K1 + K2 e i rispettivi score per validazione cumulativa
 
     Restituisce:
         true_scores: [N] — ground truth per ogni chiave nel batch
@@ -181,8 +183,10 @@ def compute_true_score(
             N1 = K1.shape[0]
             N2 = K2.shape[0]
 
-            key_scores = torch.zeros(N1, device=device)
-            actual_pairs = min(max_pairs, N1 // 2)
+            # Due array separati per K1 e K2
+            k1_scores = torch.zeros(N1, device=device)
+            k2_scores = torch.zeros(N2, device=device)
+            actual_pairs = min(max_pairs, min(N1, N2))
             num_queries = Q.shape[0]
 
             for qi in range(num_queries):
@@ -196,20 +200,22 @@ def compute_true_score(
                 for p in range(actual_pairs):
                     j1 = idx1[p]
                     j2 = idx2[p]
-                    score = (q * K1[j1] * K2[j2]).sum().abs() * 0.088  # scaling trilineare
+                    # FIX: rimosso .abs() — i logit negativi sono legittimi
+                    score = (q * K1[j1] * K2[j2]).sum() * SCALE
                     scores_pairs[p] = score
 
                 softmax_weights = F.softmax(scores_pairs, dim=-1)
 
+                # FIX: accumula su ENTRAMBI K1 e K2
                 for p in range(actual_pairs):
                     j1 = idx1[p]
-                    key_scores[j1] += softmax_weights[p]
-                    # per K2 usiamo un array separato, semplifichiamo usando K1 solo
-                    # Nota: per trilineare il vero score K2 sarebbe analogo
+                    j2 = idx2[p]
+                    k1_scores[j1] += softmax_weights[p]
+                    k2_scores[j2] += softmax_weights[p]
 
-            all_scores_list.append(key_scores.cpu())
-            # Per trilineare usiamo K1 come base
-            all_k_list.append(K1.cpu())
+            # Concatena K1 e K2 per analisi cumulativa
+            all_scores_list.append(torch.cat([k1_scores, k2_scores], dim=0).cpu())
+            all_k_list.append(torch.cat([K1, K2], dim=0).cpu())
 
     if not all_scores_list:
         raise RuntimeError("Nessun dato raccolto")
@@ -226,8 +232,8 @@ def compute_true_score(
 # ==========================================================================
 def compute_proxy_score(
     k_vectors: torch.Tensor,
-    q_vectors: torch.Tensor,
     proxy_type: str = "orthogonal",
+    n_planes: int = 5000,
 ) -> torch.Tensor:
     """
     Calcola lo score proxy usando il piano medio della Grassmanniana.
@@ -252,15 +258,14 @@ def compute_proxy_score(
     device = k_vectors.device
     # Cast a float32 per compatibilita' SVD (il modello usa bfloat16)
     k_vectors = k_vectors.float()
-    q_vectors = q_vectors.float()
 
     # 1. Costruisci piani da coppie di K
-    # Se N è grande, campiona fino a 5000 piani
-    n_planes = min(N, 5000)
-    U_list = torch.zeros(n_planes, d, 2, device=device)
+    # Se N è grande, campiona fino a n_planes piani
+    n_planes_actual = min(N, n_planes)
+    U_list = torch.zeros(n_planes_actual, d, 2, device=device)
 
     all_indices = torch.randperm(N, device=device)
-    for i in range(n_planes):
+    for i in range(n_planes_actual):
         j1 = all_indices[i % N].item()
         j2 = all_indices[(i + N // 2) % N].item()
         if j1 == j2:
@@ -281,9 +286,10 @@ def compute_proxy_score(
         sigma1, sigma2 = 0.0, 0.0
     else:
         # Q-filter classico: proiezione sul piano medio
-        q_mean = q_filters_query_mean(q_vectors)
+        # Usa gli stessi k_vectors come query (proxy auto-geometrico)
+        q_mean = q_filters_query_mean(k_vectors)
 
-        q_proj = U_mean.T @ q_vectors.T  # [2, N]
+        q_proj = U_mean.T @ k_vectors.T  # [2, N]
         U_svd, sigma, Vh_svd = torch.linalg.svd(q_proj.float(), full_matrices=False)
         sigma1, sigma2 = sigma[0].item(), sigma[1].item()
 
@@ -337,7 +343,7 @@ def load_model(ckpt_path: str, attention_type: str, device: str = "cuda"):
         gram_window=8,
     )
 
-    # 5. Copia pesi GramDet
+    # 5. Copia pesi GramDet/Simplicial
     for name, param in model.named_parameters():
         if name in ckpt_state and any(f"layers.{i}." in name for i in SIMPLICIAL_INDICES):
             if ckpt_state[name].shape == param.shape:
@@ -395,7 +401,7 @@ def main():
     # PROXY SCORE — Q-filter dal piano medio
     print(f"\n{BOLD}FASE 2/2: Calcolo PROXY score (Q-filter){NC}")
     proxy_scores, U_mean, sigma1, sigma2 = compute_proxy_score(
-        k_vectors.to(device), k_vectors.to(device), proxy_type=args.proxy_type,
+        k_vectors.to(device), proxy_type=args.proxy_type,
     )
     proxy_scores = proxy_scores.cpu()
     proxy_label = "ortogonale (∥k − P̄k∥)" if args.proxy_type == "orthogonal" else "proiezione (Q-filter)"
