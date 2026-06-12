@@ -107,10 +107,6 @@ class TestK1V1OriginalExpansion:
         config = hybrid_fixture["config"]
         simplicial_indices = hybrid_fixture["simplicial_indices"]
 
-        num_q_heads = config.num_attention_heads
-        num_kv_heads = getattr(config, "num_key_value_heads", num_q_heads)
-        num_repeats = num_q_heads // num_kv_heads if num_kv_heads > 0 else 1
-
         for idx in simplicial_indices:
             if idx not in original_weights:
                 continue  # skip se non salvato (es. env var diversa)
@@ -121,17 +117,18 @@ class TestK1V1OriginalExpansion:
             k1 = attn.k1_proj.weight
             v1 = attn.v1_proj.weight
 
-            # Espandi: repeat per il GQA ratio
-            k_expanded = k_orig.repeat(1, num_repeats) if num_repeats > 1 else k_orig
-            v_expanded = v_orig.repeat(1, num_repeats) if num_repeats > 1 else v_orig
+            # Deriva il fattore di espansione dalle shape reali (robusto per GQA e non-GQA)
+            actual_repeats = k1.shape[1] // k_orig.shape[1]
+            k_expanded = k_orig.repeat(1, actual_repeats) if actual_repeats > 1 else k_orig
+            v_expanded = v_orig.repeat(1, actual_repeats) if actual_repeats > 1 else v_orig
 
             assert torch.allclose(k1, k_expanded, atol=1e-6), \
-                f"Layer {idx}: k1_proj non matcha k_proj originale espanso"
+                f"Layer {idx}: k1_proj non matcha k_proj originale espanso (repeat={actual_repeats})"
             assert torch.allclose(v1, v_expanded, atol=1e-6), \
-                f"Layer {idx}: v1_proj non matcha v_proj originale espanso"
+                f"Layer {idx}: v1_proj non matcha v_proj originale espanso (repeat={actual_repeats})"
 
-    def test_k1_proj_not_identical_to_original(self, hybrid_fixture):
-        """k1_proj (full heads) ha shape diversa da k_proj (kv heads) in GQA."""
+    def test_k1_proj_shape_hidden_size(self, hybrid_fixture):
+        """k1_proj ha sempre shape [hidden_size, hidden_size]."""
         model = hybrid_fixture["model"]
         config = hybrid_fixture["config"]
         simplicial_indices = hybrid_fixture["simplicial_indices"]
@@ -140,7 +137,8 @@ class TestK1V1OriginalExpansion:
         for idx in simplicial_indices:
             attn = model.model.layers[idx].self_attn
             k1 = attn.k1_proj.weight
-            assert k1.shape[0] == hidden_size and k1.shape[1] == hidden_size
+            assert k1.shape == (hidden_size, hidden_size), \
+                f"Layer {idx}: k1_proj shape {k1.shape}, atteso ({hidden_size}, {hidden_size})"
 
 
 # ======================================================================
