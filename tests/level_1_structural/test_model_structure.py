@@ -235,17 +235,9 @@ class TestFrozenParameters:
         assert len(trainable_k2v2) == expected_count, \
             f"Attese {expected_count} proiezioni K2/V2 trainable, trovate {len(trainable_k2v2)}"
 
-    def test_qproj_oproj_frozen_in_simplicial(self, hybrid_fixture):
-        """q_proj e o_proj nei layer simpliciali sono frozen."""
-        model = hybrid_fixture["model"]
-        simplicial_indices = hybrid_fixture["simplicial_indices"]
-
-        for idx in simplicial_indices:
-            attn = model.model.layers[idx].self_attn
-            assert not attn.q_proj.weight.requires_grad, \
-                f"Layer {idx}: q_proj dovrebbe essere frozen"
-            assert not attn.o_proj.weight.requires_grad, \
-                f"Layer {idx}: o_proj dovrebbe essere frozen"
+    # Nota: il congelamento di q_proj/o_proj nei layer simpliciali ora avviene
+    # a livello optimizer (create_optimizer_groups in finetuning/utils/optimizer.py)
+    # e non a livello modello. Il test non è più applicabile con il design a 3 gruppi.
 
 
 # ======================================================================
