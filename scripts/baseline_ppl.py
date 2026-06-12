@@ -83,7 +83,7 @@ def compute_ppl(
         ds = load_dataset("allenai/c4", "en", split="validation", streaming=True)
         dataset_label = "C4 (validation)"
     elif dataset == "wikitext":
-        ds = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
+        ds = load_dataset("Salesforce/wikitext", "wikitext-2-v1", split="test", streaming=True)
         dataset_label = "Wikitext-2 (test)"
     else:
         raise ValueError(f"Dataset sconosciuto: {dataset}, usa 'c4' o 'wikitext'")
