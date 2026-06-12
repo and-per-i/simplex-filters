@@ -117,10 +117,11 @@ class TestK1V1OriginalExpansion:
             k1 = attn.k1_proj.weight
             v1 = attn.v1_proj.weight
 
-            # Deriva il fattore di espansione dalle shape reali (robusto per GQA e non-GQA)
-            actual_repeats = k1.shape[1] // k_orig.shape[1]
-            k_expanded = k_orig.repeat(1, actual_repeats) if actual_repeats > 1 else k_orig
-            v_expanded = v_orig.repeat(1, actual_repeats) if actual_repeats > 1 else v_orig
+            # Deriva il fattore di espansione GQA dalle shape reali (kv_heads → q_heads)
+            # k_orig: [num_kv_heads * head_dim, hidden_size] → k1: [num_q_heads * head_dim, hidden_size]
+            actual_repeats = k1.shape[0] // k_orig.shape[0]
+            k_expanded = k_orig.repeat(actual_repeats, 1) if actual_repeats > 1 else k_orig
+            v_expanded = v_orig.repeat(actual_repeats, 1) if actual_repeats > 1 else v_orig
 
             assert torch.allclose(k1, k_expanded, atol=1e-6), \
                 f"Layer {idx}: k1_proj non matcha k_proj originale espanso (repeat={actual_repeats})"
