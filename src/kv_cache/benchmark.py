@@ -152,7 +152,7 @@ def benchmark_checkpoint(
     result = BenchmarkResult(model_name=os.path.basename(checkpoint_path))
 
     # 3. Prepara batch di validazione
-    dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
+    dataset = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
 
     # 4a. Logga baseline LLaMA base (una volta, all'inizio)
     if llama_base_ppl is not None and wandb_active:

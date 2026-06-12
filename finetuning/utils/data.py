@@ -98,7 +98,7 @@ def make_wikitext_val_loader(
     Returns:
         lista di dict con input_ids, labels, attention_mask
     """
-    dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
+    dataset = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
 
     if max_samples is not None:
         dataset = dataset.take(max_samples)
@@ -178,7 +178,7 @@ def prepare_validation_batch(
     Returns:
         dict con input_ids, labels, attention_mask come tensori [N, S]
     """
-    dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
+    dataset = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
     dataset = dataset.take(num_samples)
 
     all_input_ids = []

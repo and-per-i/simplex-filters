@@ -107,7 +107,7 @@ def evaluate_perplexity(
     tokenizer_name: Optional[str] = None,
     seq_length: int = 512,
     stride: int = 256,
-    dataset_name: str = "wikitext",
+    dataset_name: str = "Salesforce/wikitext",
     dataset_config: str = "wikitext-2-raw-v1",
     max_test_samples: int = 10,
     compare_baseline: bool = True,

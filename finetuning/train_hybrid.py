@@ -98,7 +98,7 @@ def compute_baseline_ppl(
         ds = load_dataset("allenai/c4", "en", split="validation", streaming=True)
     except Exception:
         print(f"  {YELLOW}[WARN]{NC} C4 validation non disponibile, uso wikitext-2")
-        ds = load_dataset("wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
+        ds = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
 
     total_nll = 0.0
     total_tokens = 0

@@ -190,7 +190,7 @@ def analyze_checkpoint(
     tokenizer.pad_token = tokenizer.eos_token
     
     # Dataset di analisi
-    dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
+    dataset = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
     
     results = {}
     

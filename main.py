@@ -403,7 +403,7 @@ def run_llama_base_baseline(model_name: str):
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     tokenizer.pad_token = tokenizer.eos_token
 
-    val_dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
+    val_dataset = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
     ppl_llama = _eval_ppl_with_eviction(
         model, tokenizer, val_dataset, None, 0.0, 0.0,
         budget=1.0, strategy="qfilter",
@@ -634,7 +634,7 @@ def main():
         from src.kv_cache.benchmark import _eval_ppl_with_eviction
         from datasets import load_dataset
         
-        val_dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
+        val_dataset = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
         ppl_llama_base = _eval_ppl_with_eviction(
             llama_base, tokenizer, val_dataset, None, 0.0, 0.0,
             budget=1.0, strategy="qfilter",

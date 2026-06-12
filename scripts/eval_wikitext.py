@@ -112,7 +112,7 @@ def get_tokenizer(model_name: str):
 
 def get_wikitext2_test(max_samples: int = 50):
     """Carica Wikitext-2 test set."""
-    ds = load_dataset("wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
+    ds = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
     if max_samples:
         ds = ds.take(max_samples)
     return ds
