@@ -277,7 +277,9 @@ def train(config: dict):
             return step / config["warmup_steps"]
         return 1.0 - (step - config["warmup_steps"]) / max(config["max_steps"] - config["warmup_steps"], 1)
 
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=get_lr)
+    # PyTorch 2.12+ richiede lr_lambda come lista per gruppi multipli
+    lr_lambdas = [get_lr for _ in param_groups]
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambdas)
 
     # --- Dataset ---
     print(f"\n[5/5] Dataset: {config['dataset_name']}/{config['dataset_config']} (streaming)")
