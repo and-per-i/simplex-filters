@@ -20,9 +20,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers.models.llama.modeling_llama import LlamaAttention, apply_rotary_pos_emb
 
-from simplicial.ops.triton.fwd import triton_fwd
-from simplicial.ops.triton.bwd import triton_bwd
 from simplicial.ops.pytorch.two_simplicial_attention import SimplicialAttentionFunction
+# Kernel Triton opzionali — se non installato, si usa solo fallback PyTorch
+try:
+    from simplicial.ops.triton.fwd import triton_fwd
+    from simplicial.ops.triton.bwd import triton_bwd
+    _HAS_TRITON = True
+except ImportError:
+    _HAS_TRITON = False
 
 
 class SimplicialAttention(LlamaAttention):
