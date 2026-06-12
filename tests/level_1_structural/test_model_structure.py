@@ -198,22 +198,24 @@ class TestK2V2Initialization:
 class TestFrozenParameters:
     """Verifica che solo K1/V1/K2/V2 siano trainable."""
 
-    def test_all_other_layers_frozen(self, hybrid_fixture):
-        """Tutti i parametri FUORI dai layer simpliciali sono frozen (embed/lm_head esclusi: frozen dall'optimizer, non dal modello)."""
+    def test_non_simplicial_standard_layers_trainable(self, hybrid_fixture):
+        """I parametri dei layer non-simpliciali sono trainable (3-group optimizer: standard group con lr_standard)."""
         model = hybrid_fixture["model"]
         simplicial_indices = hybrid_fixture["simplicial_indices"]
 
+        # Verifica che qualche param non-simpliciale sia trainable
+        non_simplicial_trainable = 0
         for name, param in model.named_parameters():
-            # embed_tokens e lm_head sono congelati via optimizer (lr=0 in create_optimizer_groups())
             if "embed" in name or "lm_head" in name:
-                continue
+                continue  # frozen dall'optimizer (lr=0)
             in_simplicial = any(f"layers.{idx}." in name for idx in simplicial_indices)
-            if not in_simplicial:
-                assert not param.requires_grad, \
-                    f"Parametro non-simpliciale dovrebbe essere frozen: {name}"
+            if not in_simplicial and "layers" in name and param.requires_grad:
+                non_simplicial_trainable += 1
+        assert non_simplicial_trainable > 0, \
+            "Nessun parametro non-simpliciale è trainable (standard group dovrebbe essere attivo)"
 
-    def test_k1v1_k2v2_trainable(self, hybrid_fixture):
-        """Solo k1_proj, v1_proj, k2_proj, v2_proj hanno requires_grad=True nei layer simpliciali."""
+    def test_simplicial_attn_trainable(self, hybrid_fixture):
+        """Nei layer simpliciali: k1v1/k2v2 trainable, q_proj/o_proj frozen."""
         model = hybrid_fixture["model"]
         simplicial_indices = hybrid_fixture["simplicial_indices"]
 
@@ -227,7 +229,6 @@ class TestFrozenParameters:
                 elif "k2_proj" in name or "v2_proj" in name:
                     trainable_k2v2.append(name)
 
-        # 4 layer × 2 proiezioni ciascuno
         expected_count = len(simplicial_indices) * 2
         assert len(trainable_k1v1) == expected_count, \
             f"Attese {expected_count} proiezioni K1/V1 trainable, trovate {len(trainable_k1v1)}"
