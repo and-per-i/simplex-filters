@@ -9,10 +9,7 @@ Tre sezioni indipendenti:
 
 Usage:
     python scripts/diagnose_checkpoint.py --ckpt ./checkpoints/gram_det/checkpoint-2000
-    python scripts/diagnose_checkpoint.py --ckpt ./checkpoints/gram_det/checkpoint-2000 --gram-window 8
-    python scripts/diagnose_checkpoint.py --ckpt ./checkpoints/gram_det/checkpoint-2000 --section attention
-    python scripts/diagnose_checkpoint.py --ckpt ./checkpoints/gram_det/checkpoint-2000 --section generation
-    python scripts/diagnose_checkpoint.py --ckpt ./checkpoints/gram_det/checkpoint-2000 --section grad
+    python scripts/diagnose_checkpoint.py --ckpt ./checkpoints/gram_det/checkpoint-2000 --model meta-llama/Llama-3.2-1B --simplicial-indices 8,10,12,14
 """
 
 import argparse
@@ -52,13 +49,6 @@ def _flag(text: str, s: float, green: float, yellow: float) -> str:
 
 
 # ==========================================================================
-# Path del modello (senza ridondanza)
-# ==========================================================================
-MODEL_NAME = "meta-llama/Llama-3.1-8B"
-SIMPLICIAL_INDICES = [16, 20, 24, 28]
-
-
-# ==========================================================================
 # Helper: trova ultimo checkpoint in una directory
 # ==========================================================================
 def _find_latest_checkpoint(base_dir: str) -> Optional[str]:
@@ -84,7 +74,6 @@ def _install_hooks(model, indices: list) -> list[dict]:
         data = {"layer": layer_idx, "scores": [], "attn_weights": []}
         hook_data.append(data)
 
-        # Tap in _forward_gram_det per catturare scores e attn_weights locali
         original_forward = attn_module._forward_gram_det
 
         def make_hook(data_ref):
@@ -128,13 +117,11 @@ def _install_hooks(model, indices: list) -> list[dict]:
                 term3 = qk2 * (qk1 * k1k2 - k1k1 * qk2)
                 scores = (term1 - term2 + term3) * self.scaling
 
-                # Cattura scores pre-softmax
                 data_ref["scores"].append(scores.detach().float().cpu())
 
                 attn_weights = F.softmax(scores, dim=-1)
                 attn_weights = self.dropout(attn_weights)
 
-                # Cattura attn_weights post-softmax
                 data_ref["attn_weights"].append(attn_weights.detach().float().cpu())
 
                 v_hadamard = v1 * v2
@@ -154,10 +141,6 @@ def _gini(probs: torch.Tensor) -> torch.Tensor:
     """
     Gini coefficient normalizzato per distribuzioni discrete.
     0 = uniforme, 1 = one-hot.
-    
-    Formula: G = (n * sum(p_i^2) - 1) / (n - 1)
-    - n = numero di bucket (P)
-    - sum(p_i^2) = Simpson index (1 per one-hot, 1/n per uniforme)
     """
     n = probs.shape[-1]
     g = (probs.pow(2).sum(dim=-1) * n - 1.0) / (n - 1.0)
@@ -167,6 +150,8 @@ def _gini(probs: torch.Tensor) -> torch.Tensor:
 def section_attention(
     model: torch.nn.Module,
     tokenizer,
+    model_name: str,
+    simplicial_indices: list,
     seq_length: int = 512,
     num_batches: int = 2,
     device: str = "cuda",
@@ -178,10 +163,8 @@ def section_attention(
     print(f"{BOLD}  SEZIONE 1: DISTRIBUZIONE ATTENZIONE GRAMDET{NC}")
     print(f"{BOLD}{'='*60}{NC}\n")
 
-    # Installa hook
-    hook_data = _install_hooks(model, SIMPLICIAL_INDICES)
+    hook_data = _install_hooks(model, simplicial_indices)
 
-    # Prepara batch da C4
     try:
         from datasets import load_dataset
         ds = load_dataset("allenai/c4", "en", split="train", streaming=True)
@@ -214,7 +197,6 @@ def section_attention(
 
     print(f"  Token processati: ~{total_tokens:,}\n")
 
-    # Analizza distribuzione per ogni layer
     all_entropies = []
     all_max_weights = []
     all_ginis = []
@@ -222,26 +204,15 @@ def section_attention(
 
     for data in hook_data:
         layer_idx = data["layer"]
-
-        # Scores pre-softmax: [B, H, N, P]
-        scores = torch.cat(data["scores"], dim=0)  # [B*batches, H, N, P]
-        # Attn weights: [B, H, N, P]
+        scores = torch.cat(data["scores"], dim=0)
         attn = torch.cat(data["attn_weights"], dim=0)
-
         b, h, n, p = scores.shape
 
-        # Pre-softmax mean (valore assoluto medio dei logit)
         pre_softmax_mean = scores.abs().mean().item()
-
-        # Entropia: -sum(p * log(p)), uniforme = log(P), one-hot = 0
-        entropy = (-attn * torch.log(attn.clamp(min=1e-8))).sum(dim=-1)  # [B, H, N]
+        entropy = (-attn * torch.log(attn.clamp(min=1e-8))).sum(dim=-1)
         entropy_mean = entropy.mean().item()
         entropy_max = math.log(p)
-
-        # Max weight
         max_weight = attn.max(dim=-1).values.mean().item()
-
-        # Gini coefficient
         gini = _gini(attn).item()
 
         all_entropies.append(entropy_mean)
@@ -260,35 +231,17 @@ def section_attention(
               f"{'🔴 collassato' if gini > 0.8 else '🟡 moderato' if gini > 0.5 else '✅ sano'}")
         print()
 
-    # Summary
-    print(f"  {BOLD}{'─'*40}{NC}")
-    print(f"  {BOLD}RIEPILOGO{NC}")
-    print(f"  {BOLD}{'─'*40}{NC}")
-    print(f"  Pre-softmax mean:    {sum(all_pre_softmax_means)/len(all_pre_softmax_means):.6f} (atteso 0.01-1.0)")
-    print(f"  Entropia media:      {sum(all_entropies)/len(all_entropies):.2f} (atteso 1.0-{entropy_max:.0f})")
-    print(f"  Max weight medio:    {sum(all_max_weights)/len(all_max_weights):.6f} (atteso 0.1-0.5)")
-    print(f"  Gini medio:          {sum(all_ginis)/len(all_ginis):.4f} (atteso <0.5)")
-    print()
-
-    # Diagnosi finale
     avg_maxw = sum(all_max_weights) / len(all_max_weights)
-    avg_entropy = sum(all_entropies) / len(all_entropies)
     avg_gini = sum(all_ginis) / len(all_ginis)
 
     if avg_maxw > 0.9 or avg_gini > 0.8:
         print(f"  {RED}{BOLD}🔴 COLLASSO ATTENZIONE DETECTATO{NC}")
-        print(f"  La distribuzione e' one-hot su una coppia dominante.")
-        print(f"  Possibili cause: normalizzazione mal impostata, scaling errato, finestra troppo piccola.")
         return 1
     elif avg_maxw > 0.5:
         print(f"  {YELLOW}🟡 ATTENZIONE CONCENTRATA (ma non collassata){NC}")
-        print(f"  Il modello favorisce fortemente 1-2 coppie per token.")
-        print(f"  Potrebbe overfittare su pattern locali — test di generazione.")
         return 1
     else:
         print(f"  {GREEN}{BOLD}✅ DISTRIBUZIONE ATTENZIONE SANA{NC}")
-        print(f"  La finestra di attenzione e' distribuita su piu' coppie.")
-        print(f"  Pronto per training con gram_window={p}.")
         return 0
 
 
@@ -339,9 +292,6 @@ def section_generation(
                     break
 
         generated = ''.join(tokens_generated)
-
-        # Valutazione qualitativa semplice
-        # Se ripete lo stesso token 3+ volte → collasso
         tokens_set = set(tokenizer.encode(generated) if generated.strip() else [])
         if len(tokens_set) <= 1 and len(generated) > 10:
             status = f"{RED}🔴 COLLASSO{NC}"
@@ -352,20 +302,15 @@ def section_generation(
             n_good += 1
 
         print(f"  {BOLD}{name.upper():>10}{NC}: \"{prompt}{generated}\"  {status}")
-        print(f"    Token unici: {len(tokens_set)} / {len(tokenizer.encode(generated)) if generated.strip() else 0}")
 
-    print()
-    print(f"  {BOLD}{'─'*40}{NC}")
-    print(f"  {BOLD}RIEPILOGO GENERAZIONE{NC}")
-    print(f"  {BOLD}{'─'*40}{NC}")
     if n_good >= 4:
-        print(f"  {GREEN}{BOLD}✅ MODELLO SANO{NC} — genera testo coerente.")
+        print(f"  {GREEN}{BOLD}✅ MODELLO SANO{NC}")
         return 0
     elif n_good >= 2:
-        print(f"  {YELLOW}🟡 MODELLO PARZIALMENTE COLLASSATO{NC} — alcune generazioni ok.")
+        print(f"  {YELLOW}🟡 MODELLO PARZIALMENTE COLLASSATO{NC}")
         return 1
     else:
-        print(f"  {RED}{BOLD}🔴 MODELLO COLLASSATO{NC} — genera solo pattern ripetuti.")
+        print(f"  {RED}{BOLD}🔴 MODELLO COLLASSATO{NC}")
         return 2
 
 
@@ -375,6 +320,7 @@ def section_generation(
 def section_grad(
     model: torch.nn.Module,
     tokenizer,
+    simplicial_indices: list,
     seq_length: int = 128,
     device: str = "cuda",
 ) -> int:
@@ -414,7 +360,7 @@ def section_grad(
     n_exploded = 0
     n_ok = 0
 
-    for layer_idx in SIMPLICIAL_INDICES:
+    for layer_idx in simplicial_indices:
         attn = model.model.layers[layer_idx].self_attn
         print(f"  {BOLD}Layer {layer_idx}{NC}")
         for name in ['q_proj', 'k_proj', 'v_proj', 'o_proj']:
@@ -436,34 +382,14 @@ def section_grad(
             print(f"    {name}: {flag}")
         print()
 
-    # Stampa anche il grad norm medio dei layer LLaMA (non trainabili)
-    print(f"  {BOLD}Layer LLaMA (frozen){NC}")
-    frozen_norms = []
-    for layer_idx in [0, 8, 31]:
-        attn = model.model.layers[layer_idx].self_attn
-        for name in ['q_proj', 'k_proj', 'v_proj', 'o_proj']:
-            param = getattr(attn, name).weight
-            if param.grad is not None:
-                frozen_norms.append(param.grad.norm().item())
-    if frozen_norms:
-        print(f"    Grad norm media (dovrebbe essere 0): {sum(frozen_norms)/len(frozen_norms):.8f}")
-
-    print()
-    print(f"  {BOLD}{'─'*40}{NC}")
-    print(f"  {BOLD}RIEPILOGO GRAD NORM{NC}")
-    print(f"  {BOLD}{'─'*40}{NC}")
-    print(f"  Gradienti ok:        {n_ok}")
-    print(f"  Gradienti zero:      {n_zeros} {'🔴' if n_zeros > 0 else '✅'}")
-    print(f"  Gradienti esplosi:   {n_exploded} {'🔴' if n_exploded > 0 else '✅'}")
-
     optimizer.zero_grad()
     model.eval()
 
     if n_exploded > 0:
-        print(f"  {RED}{BOLD}🔴 INSTABILITA' GRADIENTI{NC} — gradienti esplosi.")
+        print(f"  {RED}{BOLD}🔴 INSTABILITA' GRADIENTI{NC}")
         return 1
     elif n_zeros > 0:
-        print(f"  {YELLOW}🟡 ALCUNI GRADIENTI ZERO{NC} — possibile bug freeze.")
+        print(f"  {YELLOW}🟡 ALCUNI GRADIENTI ZERO{NC}")
         return 1
     else:
         print(f"  {GREEN}{BOLD}✅ GRADIENTI SANI{NC}")
@@ -473,19 +399,25 @@ def section_grad(
 # ==========================================================================
 # Carica modello + tokenizer
 # ==========================================================================
-def load_model_from_ckpt(ckpt_path: Optional[str], gram_window: int, device: str) -> tuple:
+def load_model_from_ckpt(
+    ckpt_path: Optional[str],
+    gram_window: int,
+    model_name: str,
+    simplicial_indices: list,
+    device: str,
+) -> tuple:
     """
     Carica modello dal checkpoint (con pesi GramDet sovrascritti),
-    OPPURE carica LLaMA fresco da HuggingFace se ckpt_path e' None.
+    OPPURE carica modello fresco da HuggingFace se ckpt_path e' None.
     """
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from src.modeling.convert_to_hybrid import convert_llama_to_hybrid
 
     if ckpt_path is None:
         print(f"\n  {BOLD}Nessun checkpoint specificato.{NC}")
-        print(f"  Carico LLaMA 8B fresco da HuggingFace e converto al volo con gram_window={gram_window}")
+        print(f"  Carico {model_name} fresco da HuggingFace e converto al volo con gram_window={gram_window}")
         model = AutoModelForCausalLM.from_pretrained(
-            MODEL_NAME,
+            model_name,
             torch_dtype=torch.bfloat16,
             device_map="cuda",
             attn_implementation="eager",
@@ -494,7 +426,7 @@ def load_model_from_ckpt(ckpt_path: Optional[str], gram_window: int, device: str
 
         model, converted = convert_llama_to_hybrid(
             model,
-            simplicial_indices=SIMPLICIAL_INDICES,
+            simplicial_indices=simplicial_indices,
             alpha=0.01,
             w1=32,
             w2=256,
@@ -503,14 +435,12 @@ def load_model_from_ckpt(ckpt_path: Optional[str], gram_window: int, device: str
         )
         print(f"  Layer convertiti (da zero): {converted}")
 
-        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
         tokenizer.pad_token = tokenizer.eos_token
-        # model.to(device) non serve — device_map="auto" gestisce gia' il placement
         return model, tokenizer
 
     print(f"\n  {BOLD}Caricamento modello da checkpoint:{NC} {ckpt_path}")
 
-    # 1. Carica state_dict dal checkpoint (safetensors)
     from safetensors.torch import load_file as safetensors_load
     ckpt_state = {}
     safetensor_files = glob.glob(os.path.join(ckpt_path, "*.safetensors"))
@@ -525,16 +455,14 @@ def load_model_from_ckpt(ckpt_path: Optional[str], gram_window: int, device: str
     for sf in safetensor_files:
         ckpt_state.update(safetensors_load(sf))
 
-    # 2. Carica LLaMA fresco da HuggingFace (evita mismatch shape)
     model = AutoModelForCausalLM.from_pretrained(
-        MODEL_NAME,
+        model_name,
         torch_dtype=torch.bfloat16,
         device_map="cuda",
         attn_implementation="eager",
     )
     model.train()
 
-    # 3. Carica TUTTI i pesi LLaMA che matchano per shape
     loaded_match = 0
     for name, param in model.named_parameters():
         if name in ckpt_state and ckpt_state[name].shape == param.shape:
@@ -542,10 +470,9 @@ def load_model_from_ckpt(ckpt_path: Optional[str], gram_window: int, device: str
             loaded_match += 1
     print(f"  Caricati {loaded_match} pesi dal checkpoint (match per shape).")
 
-    # 4. Converti in ibrido
     model, converted = convert_llama_to_hybrid(
         model,
-        simplicial_indices=SIMPLICIAL_INDICES,
+        simplicial_indices=simplicial_indices,
         alpha=0.01,
         w1=32,
         w2=256,
@@ -554,16 +481,15 @@ def load_model_from_ckpt(ckpt_path: Optional[str], gram_window: int, device: str
     )
     print(f"  Layer convertiti: {converted}")
 
-    # 5. Carica pesi GramDet dal checkpoint (shape match perche' convertiti)
     loaded_gram = 0
     for name, param in model.named_parameters():
-        if name in ckpt_state and any(f"layers.{i}." in name for i in SIMPLICIAL_INDICES):
+        if name in ckpt_state and any(f"layers.{i}." in name for i in simplicial_indices):
             if ckpt_state[name].shape == param.shape:
                 param.data.copy_(ckpt_state[name].to(param.device))
                 loaded_gram += 1
     print(f"  Caricati {loaded_gram} pesi GramDet dal checkpoint.")
 
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
     tokenizer.pad_token = tokenizer.eos_token
 
     return model, tokenizer
@@ -578,6 +504,10 @@ def main():
     )
     parser.add_argument("--ckpt", type=str, default=None,
                         help="Path al checkpoint (default: ultimo in ./checkpoints/gram_det/)")
+    parser.add_argument("--model", type=str, default="meta-llama/Llama-3.1-8B",
+                        help="Nome del modello HuggingFace (default: meta-llama/Llama-3.1-8B)")
+    parser.add_argument("--simplicial-indices", type=str, default="16,20,24,28",
+                        help="Indici layer simpliciali, separati da virgola (default: 16,20,24,28)")
     parser.add_argument("--gram-window", type=int, default=8,
                         help="Half-window per test (default: 8)")
     parser.add_argument("--section", type=str, default="all",
@@ -587,15 +517,16 @@ def main():
                         help="Sequenza per forward pass (default: 512)")
     args = parser.parse_args()
 
+    simplicial_indices = [int(x) for x in args.simplicial_indices.split(",")]
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"  Device: {device}")
+    print(f"  Modello: {args.model}")
+    print(f"  Indici simpliciali: {simplicial_indices}")
     print(f"  Gram window: {args.gram_window}")
     print(f"  Sezione: {args.section}")
 
-    # Trova checkpoint (None = carica LLaMA fresco + converti al volo)
     ckpt_path = args.ckpt
     if ckpt_path is not None:
-        # Path esplicito: usa quello, ma cerca auto se non esiste
         if not os.path.exists(ckpt_path):
             print(f"  {YELLOW}[WARN]{NC} Checkpoint {ckpt_path} non trovato. Cerco l'ultimo...")
             ckpt_path = _find_latest_checkpoint("./checkpoints/gram_det/")
@@ -606,32 +537,26 @@ def main():
         else:
             print(f"  Checkpoint: {ckpt_path}")
     else:
-        # Nessun path specificato → carica LLaMA fresco + converti al volo
-        print(f"  {YELLOW}[INFO]{NC} Nessun checkpoint specificato. Carico LLaMA 8B fresco da HuggingFace...")
+        print(f"  {YELLOW}[INFO]{NC} Nessun checkpoint specificato. Carico {args.model} fresco da HuggingFace...")
         print(f"  La conversione al volo creerà layer GramDet con gram_window={args.gram_window}.")
-        print(f"  (I pesi GramDet saranno quelli originali di LLaMA, non addestrati.)")
 
-    # Carica modello
-    model, tokenizer = load_model_from_ckpt(ckpt_path, args.gram_window, device)
+    model, tokenizer = load_model_from_ckpt(ckpt_path, args.gram_window, args.model, simplicial_indices, device)
 
     exit_code = 0
 
-    # Sezione 1: distribuzione attenzione
     if args.section in ("all", "attention"):
-        ec = section_attention(model, tokenizer, seq_length=256, num_batches=2, device=device)
+        ec = section_attention(model, tokenizer, args.model, simplicial_indices,
+                                seq_length=256, num_batches=2, device=device)
         exit_code = max(exit_code, ec)
 
-    # Sezione 2: generazione
     if args.section in ("all", "generation"):
         ec = section_generation(model, tokenizer, device=device)
         exit_code = max(exit_code, ec)
 
-    # Sezione 3: grad norm
     if args.section in ("all", "grad"):
-        ec = section_grad(model, tokenizer, seq_length=128, device=device)
+        ec = section_grad(model, tokenizer, simplicial_indices, seq_length=128, device=device)
         exit_code = max(exit_code, ec)
 
-    # Summary
     print(f"\n{BOLD}{'='*60}{NC}")
     if exit_code == 0:
         print(f"  {GREEN}{BOLD}✅ DIAGNOSTICA COMPLETATA — TUTTI I TEST OK{NC}")

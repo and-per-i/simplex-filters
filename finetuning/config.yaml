@@ -28,6 +28,7 @@ warmup_steps: 100
 # Learning rates
 lr_k2v2: 5.0e-4           # 2.5x rispetto a prima — K2/V2 partono da random noise, gradiente debole
 lr_k1v1: 2.0e-5           # invariato — pesi pretrained, non vogliamo romperli
+lr_standard: 5e-6          # learning rate per layer non-simpliciali (standard)
 weight_decay: 0.01
 beta1: 0.9
 beta2: 0.95
@@ -37,10 +38,9 @@ log_every: 10
 val_every: 500
 save_every: 2000  # ogni checkpoint ~17 GB, con 100 GB disco teniamo solo ultimi 2
 
-# Early stopping (validation su C4, non su Wikitext-2)
-# max_perplexity_gap: confronto con la baseline LLaMA su C4 (calcolata a inizio training)
-# Durante il training, la PPL su C4 viene monitorata ma senza early stopping aggressivo
-max_perplexity_gap: 10.0
+# Early stopping
+early_stop_ppl: 15.0        # se PPL val > soglia, ferma training
+max_perplexity_gap: 10.0   # legacy: gap PPL rispetto baseline
 
 # Weights & Biases
 wandb_project: "simplex-filters"

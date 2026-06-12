@@ -53,8 +53,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="Monte Carlo baseline per varianza geodesica su Gr(2,d)"
     )
-    parser.add_argument("--dim", type=int, default=128,
-                        help="Dimensione dello spazio ambiente (default: 128)")
+    parser.add_argument("--dim", type=int, default=64,
+                        help="Dimensione dello spazio ambiente (default: 64)")
     parser.add_argument("--n-planes", type=int, default=320,
                         help="Numero di piani per run (default: 320)")
     parser.add_argument("--runs", type=int, default=10,

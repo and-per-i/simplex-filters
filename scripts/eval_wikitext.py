@@ -27,9 +27,6 @@ from datasets import load_dataset
 
 from src.eval.perplexity import compute_perplexity, LLAMA_31_8B_BASELINE_PPL
 
-# Baseline LLaMA 3.1 8B su Wikitext-2 (letteratura)
-WIKITEXT2_BASELINE = LLAMA_31_8B_BASELINE_PPL.get("wikitext-2", 8.2)
-
 RED = "\033[0;31m"
 GREEN = "\033[0;32m"
 YELLOW = "\033[1;33m"
@@ -37,21 +34,19 @@ BOLD = "\033[1m"
 NC = "\033[0m"
 
 
-def load_model(ckpt_path: str, gram_window: int = 8, device: str = "cuda") -> tuple:
+def load_model(
+    ckpt_path: str,
+    model_name: str,
+    simplicial_indices: list,
+    gram_window: int = 8,
+    device: str = "cuda",
+) -> tuple:
     """
     Carica modello dal checkpoint GramDet.
-    Replica esattamente la logica di diagnose_checkpoint.py load_model_from_ckpt:
-    1. Carica safetensors dal checkpoint
-    2. Carica LLaMA FRESCO da HuggingFace (evita mismatch shape)
-    3. Copia tutti i pesi LLaMA backbone che matchano per shape
-    4. Converti in GramDet (crea [4096,4096] dimensioni corrette)
-    5. Copia i pesi GramDet addestrati dal checkpoint
+    Model_name e simplicial_indices parametrizzati.
     """
     from safetensors.torch import load_file as safetensors_load
     from src.modeling.convert_to_hybrid import convert_llama_to_hybrid
-
-    SIMPLICIAL_INDICES = [16, 20, 24, 28]
-    MODEL_NAME = "meta-llama/Llama-3.1-8B"
 
     # 1. Carica state_dict dal checkpoint (safetensors)
     ckpt_state = {}
@@ -67,15 +62,15 @@ def load_model(ckpt_path: str, gram_window: int = 8, device: str = "cuda") -> tu
     for sf in safetensor_files:
         ckpt_state.update(safetensors_load(sf))
 
-    # 2. Carica LLaMA fresco da HuggingFace (evita mismatch shape)
+    # 2. Carica modello fresco da HuggingFace (evita mismatch shape)
     model = AutoModelForCausalLM.from_pretrained(
-        MODEL_NAME,
+        model_name,
         torch_dtype=torch.bfloat16,
         device_map="auto",
         attn_implementation="eager",
     )
 
-    # 3. Copia TUTTI i pesi LLaMA che matchano per shape
+    # 3. Copia TUTTI i pesi che matchano per shape
     loaded_match = 0
     for name, param in model.named_parameters():
         if name in ckpt_state and ckpt_state[name].shape == param.shape:
@@ -86,7 +81,7 @@ def load_model(ckpt_path: str, gram_window: int = 8, device: str = "cuda") -> tu
     # 4. Converti in ibrido (architettura GramDet)
     model, converted = convert_llama_to_hybrid(
         model,
-        simplicial_indices=SIMPLICIAL_INDICES,
+        simplicial_indices=simplicial_indices,
         alpha=0.01,
         w1=32,
         w2=256,
@@ -95,10 +90,10 @@ def load_model(ckpt_path: str, gram_window: int = 8, device: str = "cuda") -> tu
     )
     print(f"  Layer convertiti: {converted}")
 
-    # 5. Carica pesi GramDet dal checkpoint (shape match perche' convertiti)
+    # 5. Carica pesi GramDet dal checkpoint
     loaded_gram = 0
     for name, param in model.named_parameters():
-        if name in ckpt_state and any(f"layers.{i}." in name for i in SIMPLICIAL_INDICES):
+        if name in ckpt_state and any(f"layers.{i}." in name for i in simplicial_indices):
             if ckpt_state[name].shape == param.shape:
                 param.data.copy_(ckpt_state[name].to(param.device))
                 loaded_gram += 1
@@ -108,9 +103,9 @@ def load_model(ckpt_path: str, gram_window: int = 8, device: str = "cuda") -> tu
     return model
 
 
-def get_tokenizer():
-    """Carica tokenizer LLaMA."""
-    tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.1-8B")
+def get_tokenizer(model_name: str):
+    """Carica tokenizer."""
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
     tokenizer.pad_token = tokenizer.eos_token
     return tokenizer
 
@@ -125,6 +120,8 @@ def get_wikitext2_test(max_samples: int = 50):
 
 def eval_checkpoint(
     ckpt_path: str,
+    model_name: str,
+    simplicial_indices: list,
     tokenizer,
     dataset,
     seq_length: int = 512,
@@ -136,7 +133,7 @@ def eval_checkpoint(
     Restituisce PPL.
     """
     print(f"  Caricamento checkpoint: {ckpt_path}...", end=" ", flush=True)
-    model = load_model(ckpt_path, device=device)
+    model = load_model(ckpt_path, model_name, simplicial_indices, device=device)
     print("OK")
 
     ppl = compute_perplexity(
@@ -154,11 +151,11 @@ def eval_checkpoint(
     return ppl
 
 
-def eval_llama_base(tokenizer, dataset, seq_length: int = 512, stride: int = 256, device: str = "cuda") -> float:
-    """Valuta LLaMA 3.1 8B base su Wikitext-2."""
-    print(f"  Caricamento LLaMA 3.1 8B da HuggingFace...", end=" ", flush=True)
+def eval_llama_base(model_name: str, tokenizer, dataset, seq_length: int = 512, stride: int = 256, device: str = "cuda") -> float:
+    """Valuta modello base su Wikitext-2."""
+    print(f"  Caricamento {model_name} da HuggingFace...", end=" ", flush=True)
     model = AutoModelForCausalLM.from_pretrained(
-        "meta-llama/Llama-3.1-8B",
+        model_name,
         torch_dtype=torch.bfloat16,
         device_map="auto",
         attn_implementation="eager",
@@ -181,7 +178,7 @@ def eval_llama_base(tokenizer, dataset, seq_length: int = 512, stride: int = 256
     return ppl
 
 
-def print_table(results: list):
+def print_table(results: list, baseline_ppl: float):
     """Stampa tabella comparativa."""
     print(f"\n{BOLD}{'='*70}{NC}")
     print(f"{BOLD}  VALUTAZIONE WIKITEXT-2{NC}")
@@ -195,7 +192,7 @@ def print_table(results: list):
         delta = r.get("delta", 0.0)
         improvement = r.get("improvement", "-")
 
-        ppl_str = f"{GREEN}{ppl:.2f}{NC}" if ppl < WIKITEXT2_BASELINE else f"{YELLOW}{ppl:.2f}{NC}"
+        ppl_str = f"{GREEN}{ppl:.2f}{NC}" if ppl < baseline_ppl else f"{YELLOW}{ppl:.2f}{NC}"
         delta_str = f"{GREEN}{delta:+.2f}{NC}" if delta < 0 else f"{RED}{delta:+.2f}{NC}"
 
         print(f"{name:<25} {ppl_str:<10} {delta_str:<15} {improvement:<15}")
@@ -207,6 +204,10 @@ def main():
     parser = argparse.ArgumentParser(description="Valutazione PPL su Wikitext-2 per checkpoint GramDet")
     parser.add_argument("--checkpoints", type=str, nargs="+", default=None,
                         help="Lista checkpoint da valutare (default: auto in ./checkpoints/)")
+    parser.add_argument("--model", type=str, default="meta-llama/Llama-3.1-8B",
+                        help="Nome del modello HuggingFace (default: meta-llama/Llama-3.1-8B)")
+    parser.add_argument("--simplicial-indices", type=str, default="16,20,24,28",
+                        help="Indici layer simpliciali, separati da virgola (default: 16,20,24,28)")
     parser.add_argument("--max-samples", type=int, default=50,
                         help="Campioni Wikitext-2 (default: 50)")
     parser.add_argument("--seq-length", type=int, default=512)
@@ -217,15 +218,16 @@ def main():
                         help="File JSON per risultati")
 
     args = parser.parse_args()
+    simplicial_indices = [int(x) for x in args.simplicial_indices.split(",")]
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}")
-    print(f"Baseline LLaMA su Wikitext-2: {WIKITEXT2_BASELINE:.2f}")
+    print(f"Modello: {args.model}")
+    print(f"Indici simpliciali: {simplicial_indices}")
 
     # Trova checkpoint se non specificati
     ckpt_paths = args.checkpoints
     if ckpt_paths is None and not args.llama_baseline_only:
-        import glob
         ckpt_paths = sorted(
             glob.glob("./checkpoints/checkpoint-*"),
             key=lambda p: int(os.path.basename(p).split("-")[-1]),
@@ -240,12 +242,10 @@ def main():
 
     # Carica tokenizer e dataset una volta
     print(f"\nCaricamento tokenizer...", end=" ", flush=True)
-    tokenizer = get_tokenizer()
+    tokenizer = get_tokenizer(args.model)
     print("OK")
 
     print(f"Caricamento Wikitext-2 test fino a {args.max_samples} samples validi...", end=" ", flush=True)
-    # Wikitext-2 raw ha molti campioni corti (< seq_length) che vengono saltati.
-    # Filtriamo usando tokenizzatore reale per lunghezza esatta.
     min_length = args.seq_length
     raw_ds = get_wikitext2_test(max_samples=None)  # streaming
     dataset = []
@@ -261,9 +261,9 @@ def main():
 
     results = []
 
-    # Baseline LLaMA
-    print(f"\n{BOLD}Baseline LLaMA 3.1 8B{NC}")
-    ppl_llama = eval_llama_base(tokenizer, dataset, args.seq_length, args.stride, device)
+    # Baseline modello base
+    print(f"\n{BOLD}Baseline {args.model}{NC}")
+    ppl_llama = eval_llama_base(args.model, tokenizer, dataset, args.seq_length, args.stride, device)
     results.append({
         "checkpoint": "LLaMA base",
         "ppl": round(ppl_llama, 2),
@@ -285,7 +285,7 @@ def main():
             print(f"  {YELLOW}[WARN]{NC} Checkpoint {ckpt} non trovato. Salto.")
             continue
 
-        ppl = eval_checkpoint(ckpt, tokenizer, dataset, args.seq_length, args.stride, device)
+        ppl = eval_checkpoint(ckpt, args.model, simplicial_indices, tokenizer, dataset, args.seq_length, args.stride, device)
         delta = ppl - first_ppl
         improvement_pct = ((first_ppl - ppl) / first_ppl) * 100 if first_ppl > 0 else 0.0
         improvement_str = f"{GREEN}{improvement_pct:.1f}%{NC}" if improvement_pct > 0 else f"{RED}{improvement_pct:.1f}%{NC}"
@@ -300,7 +300,7 @@ def main():
         print(f"  PPL: {ppl:.2f} (Δ vs LLaMA: {delta:+.2f}, miglioramento: {improvement_pct:.1f}%)")
 
     # Tabella
-    print_table(results)
+    print_table(results, first_ppl)
 
     # Trova miglior checkpoint
     best = min(results[1:], key=lambda r: r["ppl"]) if len(results) > 1 else None

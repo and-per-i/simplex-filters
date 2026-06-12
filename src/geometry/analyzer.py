@@ -68,6 +68,7 @@ def analyze_query_distribution(
 def analyze_checkpoint(
     checkpoint_path: str,
     attention_type: str = "simplicial",
+    base_model_path: str = "meta-llama/Llama-3.1-8B",
     simplicial_indices: List[int] = [16, 20, 24, 28],
     num_heads: int = 32,
     head_dim: int = 128,
@@ -105,10 +106,10 @@ def analyze_checkpoint(
     # ma AutoModelForCausalLM.from_pretrained carica solo architettura LLaMA standard.
     # Quindi: carichiamo LLaMA base, convertiamo in ibrido, e sovrascriviamo i pesi
     # K1/V1/K2/V2 con quelli addestrati dal checkpoint.
-    base_model_path = os.path.join(os.path.dirname(checkpoint_path), "..", "..", "llama-3.1-8b")
+    # Usa base_model_path passato come parametro
     if not os.path.exists(base_model_path):
         # Fallback: carica con local_files_only=False
-        base_model_path = "meta-llama/Llama-3.1-8B"
+        pass
     
     if verbose:
         print(f"\nFASE 1/3: Caricamento modello LLaMA base da {base_model_path}")
@@ -185,7 +186,7 @@ def analyze_checkpoint(
     model.eval()
     
     # Tokenizer
-    tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.1-8B")
+    tokenizer = AutoTokenizer.from_pretrained(base_model_path)
     tokenizer.pad_token = tokenizer.eos_token
     
     # Dataset di analisi

@@ -1,4 +1,4 @@
- #!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 main.py — Entry point principale per simplex-filters.
 
@@ -28,12 +28,12 @@ from pathlib import Path
 import torch
 
 # ==========================================================================
-# Configurazione
+# Costanti globali
 # ==========================================================================
 
-MODEL_NAME = "meta-llama/Llama-3.1-8B"
-CONFIG_DIR = os.path.join(os.path.dirname(__file__), "llama-3.1-8b")
-SIMPLICIAL_INDICES = [16, 20, 24, 28]
+# Baseline Monte Carlo per varianza geodesica su Gr(2, d)
+# Calcolata con scripts/grassmann_baseline.py --dim <d> --runs 10
+GRASSMANN_BASELINE = {128: 4.09, 64: 3.85}
 
 # Colori (ANSI)
 RED = "\033[0;31m"
@@ -77,30 +77,30 @@ def print_err(msg):
 # Step 1: Carica config e modello
 # ==========================================================================
 
-def ensure_config():
+def ensure_config(model_name: str, config_dir: str):
     """Verifica che la config locale sia presente."""
-    config_file = os.path.join(CONFIG_DIR, "config.json")
+    config_file = os.path.join(config_dir, "config.json")
     if not os.path.exists(config_file):
-        print_step("1/5", f"Config non trovata in {CONFIG_DIR}, scarico...")
+        print_step("1/5", f"Config non trovata in {config_dir}, scarico...")
         from huggingface_hub import snapshot_download
         hf_token = os.environ.get("HF_TOKEN")
         if hf_token is None:
             print_warn("HF_TOKEN non impostata. Imposta con: export HF_TOKEN=<token>")
             print_warn("Provo login da cache...")
-        os.makedirs(CONFIG_DIR, exist_ok=True)
-        snapshot_download(MODEL_NAME, local_dir=CONFIG_DIR, token=hf_token)
-        print_ok(f"Config scaricata in {CONFIG_DIR}")
+        os.makedirs(config_dir, exist_ok=True)
+        snapshot_download(model_name, local_dir=config_dir, token=hf_token)
+        print_ok(f"Config scaricata in {config_dir}")
     else:
-        print_step("1/5", f"Config trovata in {CONFIG_DIR}")
+        print_step("1/5", f"Config trovata in {config_dir}")
     return True
 
 
-def load_model(real_weights=False):
-    """Carica LLaMA 3.1 8B."""
+def load_model(model_name: str, config_dir: str, real_weights=False):
+    """Carica modello LLaMA."""
     from transformers import LlamaConfig, AutoModelForCausalLM
 
-    config = LlamaConfig.from_pretrained(CONFIG_DIR)
-    print_ok("Config LLaMA 3.1 8B caricata")
+    config = LlamaConfig.from_pretrained(config_dir)
+    print_ok(f"Config {model_name} caricata")
 
     if real_weights:
         print_step("2/5", "Caricamento modello con pesi reali da HuggingFace (~30 GB)...")
@@ -109,7 +109,7 @@ def load_model(real_weights=False):
             from huggingface_hub import login
             login(token=hf_token)
         model = AutoModelForCausalLM.from_pretrained(
-            MODEL_NAME,
+            model_name,
             torch_dtype=torch.bfloat16,
             device_map="auto",
             attn_implementation="eager",
@@ -128,17 +128,17 @@ def load_model(real_weights=False):
 # Step 2: Salva pesi originali
 # ==========================================================================
 
-def save_original_weights(model):
+def save_original_weights(model, simplicial_indices):
     """Salva i pesi di k_proj e v_proj PRIMA della conversione."""
     print_step("3/5", "Salvataggio pesi originali per test...")
     original_weights = {}
-    for idx in SIMPLICIAL_INDICES:
+    for idx in simplicial_indices:
         attn = model.model.layers[idx].self_attn
         original_weights[idx] = {
             "k_proj": attn.k_proj.weight.data.clone(),
             "v_proj": attn.v_proj.weight.data.clone(),
         }
-    print_ok(f"Pesi di {len(SIMPLICIAL_INDICES)} layer salvati")
+    print_ok(f"Pesi di {len(simplicial_indices)} layer salvati")
     return original_weights
 
 
@@ -146,14 +146,14 @@ def save_original_weights(model):
 # Step 3: Converti in ibrido
 # ==========================================================================
 
-def convert_model(model, attention_type, alpha, w1, w2, gram_window):
+def convert_model(model, simplicial_indices, attention_type, alpha, w1, w2, gram_window):
     """Converte il modello in ibrido."""
     from src.modeling.convert_to_hybrid import convert_llama_to_hybrid
 
     print_step("4/5", f"Conversione in modello ibrido ({attention_type})...")
     model, converted = convert_llama_to_hybrid(
         model,
-        simplicial_indices=SIMPLICIAL_INDICES,
+        simplicial_indices=simplicial_indices,
         alpha=alpha,
         w1=w1,
         w2=w2,
@@ -168,14 +168,14 @@ def convert_model(model, attention_type, alpha, w1, w2, gram_window):
 # Step 4: Freeze parametri
 # ==========================================================================
 
-def freeze_model(model, attention_type):
+def freeze_model(model, simplicial_indices, attention_type):
     """Applica freeze dei parametri."""
     from src.modeling.convert_to_hybrid import freeze_parameters
 
     print_step("5/5", f"Congelamento parametri ({attention_type})...")
     param_groups = freeze_parameters(
         model,
-        simplicial_indices=SIMPLICIAL_INDICES,
+        simplicial_indices=simplicial_indices,
         attention_type=attention_type,
     )
     print_ok(f"Parametri congelati: {len(param_groups)} gruppi")
@@ -189,28 +189,10 @@ def freeze_model(model, attention_type):
 def run_tests(levels, verbose=False, stop_on_failure=False, model_name="random", model_type="hybrid"):
     """
     Esegue i test specificati e scrive un report su test_results.txt.
-    
-    I test vengono filtrati per tipo di modello:
-    - "llama_base": salta tutti i test strutturali (solo perplexity/RULER
-      calcolati separatamente)
-    - "trilinear" / "gram_det": esegue tutti i test pertinenti
-    - "hybrid": default, tutti i test
-    
-    Args:
-        levels: livelli da eseguire
-        verbose: output verboso
-        stop_on_failure: ferma al primo fallimento
-        model_name: nome del modello per il report
-        model_type: tipo di modello per filtrare i test
-            ("llama_base", "trilinear", "gram_det", "hybrid")
-    
-    Returns:
-        True se tutti i test passano
     """
     import pytest
     import re
 
-    # LLaMA base non ha layer simpliciali → nessun test strutturale
     if model_type == "llama_base":
         print_step("5/5", "LLaMA base: nessun test strutturale (skip)")
         print(f"  {YELLOW}[INFO]{NC} I test per LLaMA base sono solo perplexity + RULER,")
@@ -242,7 +224,6 @@ def run_tests(levels, verbose=False, stop_on_failure=False, model_name="random",
     print_step("5/5", f"Esecuzione test: {model_tag} — livelli {levels}...")
     print()
 
-    # Raccogli tutti i risultati
     all_output = []
     total_passed = 0
     total_failed = 0
@@ -257,10 +238,7 @@ def run_tests(levels, verbose=False, stop_on_failure=False, model_name="random",
         ret = subprocess.run(cmd, capture_output=True, text=True)
         output = ret.stdout + ret.stderr
         
-        # Parsiifica risultati
         for line in output.split("\n"):
-            # Formato pytest: test_name.py::test_func PASSED
-            # Formato pytest -q: test_file.py::test_func PASSED
             m = re.search(r'(PASSED|FAILED|SKIPPED|ERROR)', line)
             if m and ("::" in line or "test_" in line):
                 status = m.group(1)
@@ -277,14 +255,12 @@ def run_tests(levels, verbose=False, stop_on_failure=False, model_name="random",
             print(output[-1000:] if len(output) > 1000 else output)
 
         if ret.returncode != 0 and not stop_on_failure:
-            # Mostra gli errori principali
             error_lines = [l for l in output.split("\n") if "FAILED" in l or "ERROR" in l]
             if error_lines:
                 print(f"  {RED}Errori:{NC}")
                 for err in error_lines[:5]:
                     print(f"    {err}")
 
-    # Scrivi il report
     from datetime import datetime
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
@@ -305,7 +281,6 @@ def run_tests(levels, verbose=False, stop_on_failure=False, model_name="random",
             for line in output.split("\n"):
                 line_stripped = line.strip()
                 if "::" in line_stripped and ("PASSED" in line_stripped or "FAILED" in line_stripped or "SKIPPED" in line_stripped):
-                    # Estrai solo il nome del test e lo stato
                     parts = line_stripped.split("::")
                     test_name = parts[-1] if len(parts) > 1 else line_stripped
                     symbol = {"PASSED": "✔", "FAILED": "✘", "SKIPPED": "⊘", "ERROR": "✘"}
@@ -320,7 +295,6 @@ def run_tests(levels, verbose=False, stop_on_failure=False, model_name="random",
     
     all_passed = total_failed == 0
     
-    # Stampa riepilogo
     print(f"\n  {GREEN}Passed: {total_passed}{NC} {RED}Failed: {total_failed}{NC} {YELLOW}Skipped: {total_skipped}{NC}")
     print(f"  Report salvato: {report_path}")
     
@@ -334,20 +308,9 @@ def run_tests(levels, verbose=False, stop_on_failure=False, model_name="random",
 def run_analysis(checkpoint_path: str, verbose: bool = False, device: str = "cuda", attention_type: str = "simplicial"):
     """
     Esegue l'analisi geometrica completa su un checkpoint addestrato.
-    
-    Carica il modello, estrae K1/K2/Q via hook su Wikitext-2,
-    calcola: piano medio (Frechet), varianza geodesica, query media
-    (Q-filters), relazione query-piano, anisotropia nel piano.
-    
-    Args:
-        checkpoint_path: path al checkpoint
-        verbose: output verboso
-        device: "cuda" o "cpu" — usa "cpu" quando la GPU e' occupata dal training
-        attention_type: "simplicial" (trilineare) o "gram_det"
     """
     from src.geometry.analyzer import analyze_checkpoint, summarize_results
 
-    # Converti path relativo in assoluto (from_pretrained rifiuta path relativi)
     abs_path = os.path.abspath(checkpoint_path)
 
     print(f"\n{BOLD}{'=' * 60}{NC}")
@@ -384,16 +347,10 @@ def run_test_checkpoint(checkpoint_path: str, attention_type: str, verbose: bool
     """
     Carica un checkpoint addestrato, esegue i test strutturali/forward/numerici,
     e scrive il report su test_results.txt.
-    
-    Args:
-        checkpoint_path: path al checkpoint
-        attention_type: tipo di attenzione ("simplicial" o "gram_det")
-        verbose: output verboso
     """
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from src.modeling.convert_to_hybrid import convert_llama_to_hybrid, freeze_parameters
 
-    # Converti path relativo in assoluto (from_pretrained rifiuta path relativi)
     abs_path = os.path.abspath(checkpoint_path)
 
     print(f"\n{BOLD}{'=' * 60}{NC}")
@@ -409,7 +366,6 @@ def run_test_checkpoint(checkpoint_path: str, attention_type: str, verbose: bool
     )
     model.eval()
 
-    # Test strutturali sul checkpoint
     model_type = "trilinear" if attention_type == "simplicial" else "gram_det"
     ok = run_tests(
         levels=[1, 2, 3],
@@ -422,10 +378,9 @@ def run_test_checkpoint(checkpoint_path: str, attention_type: str, verbose: bool
     return 0 if ok else 1
 
 
-def run_llama_base_baseline():
+def run_llama_base_baseline(model_name: str):
     """
-    Calcola baseline perplexity + RULER per LLaMA base puro.
-    Carica il modello, calcola, libera GPU, stampa risultati.
+    Calcola baseline perplexity + RULER per modello base puro.
     """
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from src.kv_cache.benchmark import _eval_ppl_with_eviction
@@ -438,17 +393,16 @@ def run_llama_base_baseline():
     print(f"{BOLD}{'=' * 60}{NC}\n")
 
     model = AutoModelForCausalLM.from_pretrained(
-        "meta-llama/Llama-3.1-8B",
+        model_name,
         torch_dtype=torch.bfloat16,
         device_map="auto",
         attn_implementation="eager",
     )
     model.eval()
 
-    tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.1-8B")
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
     tokenizer.pad_token = tokenizer.eos_token
 
-    # Baseline perplexity
     val_dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
     ppl_llama = _eval_ppl_with_eviction(
         model, tokenizer, val_dataset, None, 0.0, 0.0,
@@ -457,7 +411,6 @@ def run_llama_base_baseline():
     )
     print(f"  Baseline LLaMA PPL: {ppl_llama:.2f}")
 
-    # Baseline RULER (NIAH singolo)
     correct = 0
     total = 10
     for test_idx in range(total):
@@ -480,21 +433,14 @@ def run_llama_base_baseline():
 # ==========================================================================
 # Step 7: Finetuning
 # ==========================================================================
-def run_finetuning(args, output_subdir=None):
+def run_finetuning(args, model_name, simplicial_indices, output_subdir=None):
     """
     Esegue il finetuning del modello ibrido su C4.
-    Carica pesi reali, converte, addestra, salva checkpoint.
-    
-    Args:
-        args: namespace con tutti i parametri
-        output_subdir: sottocartella per checkpoint (es. "trilinear", "gram_det")
     """
-    # Deriva sottocartella dal tipo di attenzione se non specificata
     if output_subdir is None:
         output_subdir = "gram_det" if args.attention_type == "gram_det" else "trilinear"
     
     from finetuning.train_hybrid import train
-    from finetuning.utils.optimizer import create_optimizer_groups
     from finetuning.utils.wandb_utils import init_wandb, finish_wandb
 
     attn_label = "TRILINEARE" if args.attention_type == "simplicial" else "GRAM DET"
@@ -504,34 +450,28 @@ def run_finetuning(args, output_subdir=None):
     print(f"{BOLD}  Attenzione: {args.attention_type}{NC}")
     print(f"{BOLD}{'=' * 60}{NC}\n")
 
-    # Carica config di training
     import yaml
     config_path = args.finetune_config
     with open(config_path) as f:
         config = yaml.safe_load(f)
 
-    # Override parametri da CLI
     if args.max_steps is not None:
         config["max_steps"] = args.max_steps
     if args.lr_k2v2 is not None:
         config["lr_k2v2"] = args.lr_k2v2
     config["attention_type"] = args.attention_type
     config["alpha"] = args.alpha
-    config["simplicial_indices"] = SIMPLICIAL_INDICES
+    config["model_name"] = model_name
+    config["simplicial_indices"] = simplicial_indices
     if args.resume is not None:
         config["resume_path"] = os.path.abspath(args.resume)
 
-    # Checkpoint in sottocartella separata
     if output_subdir:
         config["checkpoint_dir"] = os.path.join(
             os.path.dirname(config["checkpoint_dir"]), output_subdir
         )
 
-    # Esegue training (carica modello, converte, freeze, dataset, loop)
-    # Baseline C4 = 9.45 (LLaMA 3 8B su C4, letteratura)
-    # Impostato direttamente in train_hybrid.py come costante
     train(config)
-
     return 0
 
 
@@ -562,6 +502,12 @@ def main():
                         help="Path configurazione finetuning (default: finetuning/config.yaml)")
 
     # Parametri modello
+    parser.add_argument("--model", type=str, default="meta-llama/Llama-3.1-8B",
+                        help="Nome del modello HuggingFace (default: meta-llama/Llama-3.1-8B)")
+    parser.add_argument("--config-dir", type=str, default=None,
+                        help="Directory config modello (default: derivata da nome modello)")
+    parser.add_argument("--simplicial-indices", type=str, default="16,20,24,28",
+                        help="Indici layer simpliciali, separati da virgola (default: 16,20,24,28)")
     parser.add_argument("--real-weights", action="store_true",
                         help="Scarica pesi reali da HuggingFace (~30 GB)")
     parser.add_argument("--attention-type", type=str, default="simplicial",
@@ -578,7 +524,7 @@ def main():
     parser.add_argument("--gram-window", type=int, default=8,
                         help="Half-window per Gram Det")
 
-    # Parametri finetuning (override della config YAML)
+    # Parametri finetuning
     parser.add_argument("--max-steps", type=int, default=None,
                         help="Override max_steps per finetuning")
     parser.add_argument("--lr-k2v2", type=float, default=None,
@@ -601,45 +547,47 @@ def main():
 
     args = parser.parse_args()
 
+    # Deriva parametri
+    simplicial_indices = [int(x) for x in args.simplicial_indices.split(",")]
+    model_name = args.model
+    config_dir = args.config_dir
+    if config_dir is None:
+        # Deriva directory config dal nome modello (ultimo segmento dopo /)
+        config_dir = os.path.join(
+            os.path.dirname(__file__),
+            model_name.split("/")[-1].lower()
+        )
+
     # ======================================================================
     # MODALITA' FINETUNING
     # ======================================================================
     if args.finetune:
-        ensure_config()
-        return run_finetuning(args)
+        ensure_config(model_name, config_dir)
+        return run_finetuning(args, model_name, simplicial_indices)
 
     # ======================================================================
     # MODALITA' BOTH: TRILINEARE + GRAM DET
     # ======================================================================
     if args.both:
-        ensure_config()
+        ensure_config(model_name, config_dir)
 
-        # FASE 0: saltata (baseline LLaMA causa OOM con context_len=8192)
-        # La PPL baseline C4 e' fissata a 9.45 (letteratura) come costante
-
-        # FASE 1: TRILINEARE
         print(f"\n{BOLD}══════════════════════════════════════════════════════════════{NC}")
         print(f"{BOLD}  FASE 1/2: FINETUNING TRILINEARE{NC}")
         print(f"{BOLD}══════════════════════════════════════════════════════════════{NC}\n")
         args.attention_type = "simplicial"
-        run_finetuning(args, output_subdir="trilinear")
+        run_finetuning(args, model_name, simplicial_indices, output_subdir="trilinear")
 
-        # FASE 1b: Analisi + benchmark + test trilineare
-        # run_finetuning salva in `./trilinear/final/` (config.checkpoint_dir="./checkpoints"
-        # → os.path.dirname("./checkpoints") = ".", poi os.path.join(".", "trilinear") = "./trilinear")
         ckpt_path = os.path.abspath(os.path.join(".", "trilinear", "final"))
         run_analysis(ckpt_path, verbose=args.verbose)
         run_test_checkpoint(ckpt_path, "trilinear", verbose=args.verbose)
         free_gpu_memory()
 
-        # FASE 2: GRAM DET
         print(f"\n{BOLD}══════════════════════════════════════════════════════════════{NC}")
         print(f"{BOLD}  FASE 2/2: FINETUNING GRAM DET{NC}")
         print(f"{BOLD}══════════════════════════════════════════════════════════════{NC}\n")
         args.attention_type = "gram_det"
-        run_finetuning(args, output_subdir="gram_det")
+        run_finetuning(args, model_name, simplicial_indices, output_subdir="gram_det")
 
-        # FASE 2b: Analisi + benchmark + test Gram Det
         ckpt_path_gd = os.path.abspath(os.path.join(".", "gram_det", "final"))
         run_analysis(ckpt_path_gd, verbose=args.verbose)
         run_test_checkpoint(ckpt_path_gd, "gram_det", verbose=args.verbose)
@@ -671,20 +619,18 @@ def main():
         print(f"{BOLD}  Checkpoint: {args.benchmark}{NC}")
         print(f"{BOLD}{'=' * 60}{NC}\n")
 
-        # Carica LLaMA base UNA SOLA VOLTA (fuori dal benchmark loop)
         print("Caricamento LLaMA base per baseline...")
         llama_base = AutoModelForCausalLM.from_pretrained(
-            "meta-llama/Llama-3.1-8B",
+            model_name,
             torch_dtype=torch.bfloat16,
             device_map="auto",
             attn_implementation="eager",
         )
         llama_base.eval()
 
-        tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.1-8B")
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
         tokenizer.pad_token = tokenizer.eos_token
 
-        # Calcola PPL LLaMA base sul validation set
         from src.kv_cache.benchmark import _eval_ppl_with_eviction
         from datasets import load_dataset
         
@@ -729,7 +675,7 @@ def main():
         )
         model.eval()
 
-        tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.1-8B")
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
         tokenizer.pad_token = tokenizer.eos_token
 
         result = run_niah_benchmark(
@@ -758,27 +704,28 @@ def main():
     # ======================================================================
     print(f"\n{BOLD}{'=' * 60}{NC}")
     print(f"{BOLD}  simplex-filters — Validazione modello ibrido{NC}")
+    print(f"{BOLD}  Modello: {model_name}{NC}")
     print(f"{BOLD}  Attenzione: {args.attention_type}{NC}")
     print(f"{BOLD}  Pesi reali: {args.real_weights}{NC}")
     print(f"{BOLD}{'=' * 60}{NC}\n")
 
     # Step 1: Config
-    ensure_config()
+    ensure_config(model_name, config_dir)
 
     # Step 2: Modello
     try:
-        model = load_model(real_weights=args.real_weights)
+        model = load_model(model_name, config_dir, real_weights=args.real_weights)
     except Exception as e:
         print_err(f"Caricamento modello fallito: {e}")
         return 1
 
     # Step 3: Pesi originali
-    original_weights = save_original_weights(model)
+    original_weights = save_original_weights(model, simplicial_indices)
 
     # Step 4: Conversione
     try:
         model, converted = convert_model(
-            model, args.attention_type, args.alpha, args.w1, args.w2, args.gram_window,
+            model, simplicial_indices, args.attention_type, args.alpha, args.w1, args.w2, args.gram_window,
         )
     except Exception as e:
         print_err(f"Conversione modello fallita: {e}")
@@ -786,7 +733,7 @@ def main():
 
     # Step 5: Freeze
     try:
-        freeze_model(model, args.attention_type)
+        freeze_model(model, simplicial_indices, args.attention_type)
     except Exception as e:
         print_warn(f"Freeze parametri fallito: {e} (non bloccante)")
 
@@ -796,7 +743,6 @@ def main():
     ok = run_tests(args.level, verbose=verbose_flag, stop_on_failure=args.stop_on_failure,
                    model_type=model_type)
 
-    # Riepilogo
     print(f"\n{BOLD}{'=' * 60}{NC}")
     if ok:
         print(f"  {GREEN}{BOLD}✅ TUTTI I TEST SONO PASSATI.{NC}")

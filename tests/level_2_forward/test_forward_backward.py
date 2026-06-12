@@ -80,8 +80,9 @@ class TestForwardPass:
 
     @requires_gpu
     def test_hidden_state_shape(self, hybrid_fixture, small_input):
-        """Hidden state (prima del lm_head) ha shape [B, S, 4096]."""
+        """Hidden state (prima del lm_head) ha shape [B, S, hidden_size]."""
         model = hybrid_fixture["model"]
+        hidden_size = model.config.hidden_size
         # Attiviamo il registratore di hidden states
         with torch.no_grad():
             # Prendiamo l'output dell'ultimo decoder layer
@@ -90,7 +91,7 @@ class TestForwardPass:
                 output_hidden_states=True,
             )
             hidden = output.hidden_states[-1]
-            assert hidden.shape == (BATCH_SIZE, SEQ_LENGTH, 4096), \
+            assert hidden.shape == (BATCH_SIZE, SEQ_LENGTH, hidden_size), \
                 f"Hidden state shape {hidden.shape}"
 
     @requires_gpu

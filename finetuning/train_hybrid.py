@@ -3,15 +3,15 @@
 train_hybrid.py — Finetuning del modello ibrido LLaMA + 2-Simplicial su C4.
 
 Pipeline:
-1. Carica modello LLaMA 3.1 8B da HuggingFace
-2. Calcola baseline PPL su Wikitext-2 (per early stopping)
+1. Carica modello da HuggingFace
+2. Calcola baseline PPL runtime (su C4)
 3. Converte in ibrido con convert_llama_to_hybrid()
-4. Crea AdamW con 3 gruppi di parametri
+4. Crea AdamW con 4 gruppi di parametri (frozen, standard, k1v1, k2v2)
 5. Training loop manuale con:
    - C4 streaming dataset
    - WandB logging
    - Validation ogni 500 step
-   - Early stopping se PPL gap > 0.5
+   - Early stopping se PPL > soglia
    - Checkpoint ogni 1000 step
 6. Salva modello finale e checkpoint
 
@@ -55,10 +55,9 @@ from finetuning.utils.wandb_utils import init_wandb, log_metrics, finish_wandb
 
 DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.yaml")
 
-# Perplexity baseline di LLaMA 3.1 8B su C4 validation (stesso dominio del training)
-# Fonte: letteratura — LLaMA 3 8B su C4 ha perplexity ~9.45
-# (sostituito il valore fisso 8.2 da Wikitext-2, che era un confronto mele-pere)
-LLAMA_BASELINE_PPL = 9.45
+# Baseline Monte Carlo per varianza geodesica su Gr(2, d)
+# Calcolata con scripts/grassmann_baseline.py --dim <d> --runs 10
+GRASSMANN_BASELINE = {128: 4.09, 64: 3.85}
 
 # Colori ANSI per output
 GREEN = "\033[0;32m"
@@ -75,7 +74,61 @@ def load_config(config_path: str = DEFAULT_CONFIG_PATH, overrides: dict = None) 
     return config
 
 
-def check_env_vars(wandb_active: bool):
+def compute_baseline_ppl(
+    model,
+    tokenizer,
+    device: str = "cuda",
+    seq_length: int = 512,
+    num_samples: int = 10,
+) -> float:
+    """
+    Calcola la PPL baseline su C4 per il modello appena caricato (forward pass only).
+
+    Args:
+        model: modello LLaMA fresco (non convertito)
+        tokenizer: tokenizer
+        device: device
+        seq_length: lunghezza sequenza
+        num_samples: numero di campioni C4
+
+    Returns:
+        PPL media
+    """
+    try:
+        ds = load_dataset("allenai/c4", "en", split="validation", streaming=True)
+    except Exception:
+        print(f"  {YELLOW}[WARN]{NC} C4 validation non disponibile, uso wikitext-2")
+        ds = load_dataset("wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
+
+    total_nll = 0.0
+    total_tokens = 0
+    count = 0
+
+    model.eval()
+    for example in ds:
+        if count >= num_samples:
+            break
+        text = example.get("text", "")
+        if not text.strip():
+            continue
+        enc = tokenizer(text, return_tensors="pt", truncation=True, max_length=seq_length)
+        if enc["input_ids"].shape[1] < 10:
+            continue
+        input_ids = enc["input_ids"].to(device)
+        with torch.no_grad():
+            outputs = model(input_ids, labels=input_ids)
+            nll = outputs.loss.item() * (input_ids.shape[1] - 1)
+            total_nll += nll
+            total_tokens += input_ids.shape[1] - 1
+        count += 1
+
+    model.train()
+    avg_nll = total_nll / max(total_tokens, 1)
+    ppl = math.exp(avg_nll)
+    return ppl
+
+
+def check_env_vars(wandb_active: bool, model_name: str):
     """Verifica variabili d'ambiente necessarie."""
     hf_token = os.environ.get("HF_TOKEN")
     wandb_key = os.environ.get("WANDB_API_KEY")
@@ -90,7 +143,7 @@ def check_env_vars(wandb_active: bool):
     else:
         print(f"  {YELLOW}[WARN]{NC} HF_TOKEN non impostato")
         print(f"  {YELLOW}      Il download del modello da HuggingFace richiede:{NC}")
-        print(f"  {YELLOW}      1. Accettare licenza su https://hf.co/meta-llama/Llama-3.1-8B{NC}")
+        print(f"  {YELLOW}      1. Accettare licenza su https://hf.co/{model_name}{NC}")
         print(f"      2. Generare token su https://hf.co/settings/tokens")
         print(f"      3. export HF_TOKEN=hf_yourtoken")
         print(f"      Oppure assicurati di essere loggato con huggingface-cli login")
@@ -133,7 +186,7 @@ def train(config: dict):
         import wandb
         wandb.config.update(config, allow_val_change=True)
 
-    check_env_vars(wandb_active)
+    check_env_vars(wandb_active, config["model_name"])
 
     # --- Carica modello ---
     print(f"\n[1/5] Caricamento modello: {config['model_name']}")
@@ -148,14 +201,36 @@ def train(config: dict):
     model.train()
     print("  OK")
 
+    # --- Deriva architettura dal model.config ---
+    head_dim = getattr(model.config, "head_dim", None) or (
+        model.config.hidden_size // model.config.num_attention_heads
+    )
+    hidden_size = model.config.hidden_size
+    num_layers = model.config.num_hidden_layers
+    num_q_heads = model.config.num_attention_heads
+    num_kv_heads = getattr(model.config, "num_key_value_heads", num_q_heads)
+    num_repeats = num_q_heads // num_kv_heads if num_kv_heads > 0 else 1
+
+    print(f"  Architettura derivata: hidden={hidden_size}, layers={num_layers}, "
+          f"heads={num_q_heads}, kv_heads={num_kv_heads}, head_dim={head_dim}")
+
     # --- Tokenizer ---
     tokenizer = AutoTokenizer.from_pretrained(config["model_name"], token=hf_token)
     tokenizer.pad_token = tokenizer.eos_token
     print("  Tokenizer OK")
 
-    # --- Baseline C4 (stesso dominio del training) ---
-    # LLaMA 3 8B su C4 ha perplexity ~9.45 (letteratura)
-    print(f"  Baseline LLaMA su C4: PPL ~{LLAMA_BASELINE_PPL:.2f}")
+    # --- Baseline PPL runtime (stesso dominio del training) ---
+    baseline_ppl = config.get("baseline_ppl", None)
+    if baseline_ppl is None:
+        print(f"\n  Calcolo baseline PPL su C4 ({config.get('val_samples', 50)} campioni)...")
+        baseline_ppl = compute_baseline_ppl(
+            model, tokenizer, device=device,
+            seq_length=config["seq_length"],
+            num_samples=config.get("val_samples", 50),
+        )
+        print(f"  Baseline LLaMA su C4: PPL = {baseline_ppl:.2f}")
+    else:
+        print(f"  Baseline LLaMA su C4: PPL = {baseline_ppl:.2f} (da config)")
 
     print(f"\n[2/5] Batch di validazione su C4 ({config['val_samples']} campioni)...")
     val_batch_c4 = prepare_c4_validation_batch(
@@ -181,11 +256,13 @@ def train(config: dict):
 
     # --- Ottimizzatore ---
     print(f"\n[4/5] Creazione ottimizzatore...")
+    lr_standard = config.get("lr_standard", 5e-6)
     param_groups = create_optimizer_groups(
         model,
         simplicial_indices=config["simplicial_indices"],
         lr_k2v2=config["lr_k2v2"],
         lr_k1v1=config["lr_k1v1"],
+        lr_standard=lr_standard,
         weight_decay=config["weight_decay"],
         attention_type=config["attention_type"],
     )
@@ -238,7 +315,7 @@ def train(config: dict):
         for sf in safetensor_files:
             state_dict.update(safetensors_load(sf))
         
-        # 2. Sovrascrivi SOLO i 16 pesi dei layer simpliciali
+        # 2. Sovrascrivi SOLO i pesi dei layer simpliciali
         loaded = 0
         for name, param in model.named_parameters():
             if name in state_dict and any(f"layers.{i}." in name for i in config["simplicial_indices"]):
@@ -272,7 +349,7 @@ def train(config: dict):
     print(f"  TRAINING: {config['max_steps']} steps")
     print(f"  Batch effettivo: {config['per_device_batch_size']} * {config['gradient_accumulation_steps']} = "
           f"{config['per_device_batch_size'] * config['gradient_accumulation_steps']}")
-    print(f"  LR K2/V2: {config['lr_k2v2']}, LR K1/V1: {config['lr_k1v1']}")
+    print(f"  LR K2/V2: {config['lr_k2v2']}, LR K1/V1: {config['lr_k1v1']}, LR Standard: {lr_standard}")
     print(f"{'='*60}\n")
 
     global_step = resume_step  # 0 se fresh, N se resume
@@ -281,6 +358,7 @@ def train(config: dict):
     early_stopped = False
     patience_counter = 0
     max_patience = 3
+    early_stop_ppl = config.get("early_stop_ppl", None)
 
     for batch in train_loader:
         if global_step >= config["max_steps"]:
@@ -306,8 +384,7 @@ def train(config: dict):
             scheduler.step()
             optimizer.zero_grad()
 
-            # Log training loss — cumulative_loss e' gia' divisa per GAS ad ogni micro-batch
-            # avg_loss = cumulative_loss / GAS sarebbe una doppia divisione
+            # Log training loss
             avg_loss = cumulative_loss
             lr_k2v2 = optimizer.param_groups[-1]["lr"] if len(optimizer.param_groups) > 2 else 0.0
 
@@ -337,9 +414,9 @@ def train(config: dict):
             log_metrics(val_metrics, global_step, wandb_active)
 
             ppl = val_metrics["val/perplexity"]
-            delta = ppl - LLAMA_BASELINE_PPL
+            delta = ppl - baseline_ppl
 
-            print(f"  PPL: {ppl:.2f} (baseline: {LLAMA_BASELINE_PPL}, delta: {delta:+.2f})")
+            print(f"  PPL: {ppl:.2f} (baseline: {baseline_ppl:.2f}, delta: {delta:+.2f})")
             k1k2 = val_metrics.get('val/l2_k1k2_mean', "N/A")
             v1v2 = val_metrics.get('val/l2_v1v2_mean', "N/A")
             l2_k1k2_str = f"{k1k2:.6f}" if isinstance(k1k2, float) else str(k1k2)
@@ -347,7 +424,16 @@ def train(config: dict):
             print(f"  L2 K1/K2: {l2_k1k2_str}")
             print(f"  L2 V1/V2: {l2_v1v2_str}")
 
-            # Early stopping basato su patience: ferma se PPL non migliora per 3 validation consecutive
+            # Early stopping per PPL assoluta
+            if early_stop_ppl is not None and ppl > early_stop_ppl:
+                print(f"\n{'='*50}")
+                print(f"  EARLY STOPPING: PPL={ppl:.2f} > {early_stop_ppl}")
+                print(f"{'='*50}\n")
+                early_stopped = True
+                log_metrics({"train/early_stopped_ppl_at": global_step}, global_step, wandb_active)
+                break
+
+            # Early stopping basato su patience
             if ppl >= best_ppl:
                 patience_counter += 1
                 print(f"  Patience: {patience_counter}/{max_patience}")
@@ -381,7 +467,6 @@ def train(config: dict):
             log_metrics({"train/checkpoint_saved": global_step}, global_step, wandb_active)
 
             # Auto-pulizia: cancella checkpoint piu' vecchi (tieni solo ultimi 2)
-            # Ordina per step numerico (non lessicografico — check-10 < check-2!)
             all_ckpts = sorted(
                 glob.glob(os.path.join(checkpoint_dir, "checkpoint-*")),
                 key=lambda p: int(os.path.basename(p).split("-")[-1]),
@@ -425,6 +510,7 @@ def parse_args():
     parser.add_argument("--max-steps", type=int)
     parser.add_argument("--lr-k2v2", type=float)
     parser.add_argument("--lr-k1v1", type=float)
+    parser.add_argument("--lr-standard", type=float)
     parser.add_argument("--batch-size", type=int)
     parser.add_argument("--grad-accum", type=int)
     parser.add_argument("--checkpoint-dir", type=str)

@@ -71,6 +71,7 @@ def _clear_model_eviction(model, simplicial_indices):
 def benchmark_checkpoint(
     checkpoint_path: str,
     attention_type: str = "simplicial",
+    model_name: str = "meta-llama/Llama-3.1-8B",
     budgets: List[float] = None,
     seq_length: int = 256,
     num_batches: int = 5,
@@ -105,6 +106,7 @@ def benchmark_checkpoint(
     if budgets is None:
         budgets = [1.0, 0.5, 0.3, 0.1]
     
+    # Simplicial indices (default per backward compat)
     simplicial_indices = [16, 20, 24, 28]
 
     from datasets import load_dataset
@@ -121,9 +123,9 @@ def benchmark_checkpoint(
     )
     model.eval()
 
-    # Tokenizer (riusa se passato, altrimenti carica)
+    # Tokenizer (riusa se passato, altrimenti carica — usa model_name passato o default)
     if tokenizer is None:
-        tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.1-8B")
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
         tokenizer.pad_token = tokenizer.eos_token
 
     # 2. Calcola analisi geometrica UNA SOLA VOLTA
