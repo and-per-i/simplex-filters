@@ -5,12 +5,58 @@ Fornisce:
 - C4 streaming per training
 - Wikitext-2 per validation
 - Chunking a sequenze di lunghezza fissa
+
+I dataset possono essere caricati da HuggingFace (streaming) o da disco locale
+(per ambienti con proxy restrittivi come Vast.ai). La directory locale è ./data/.
 """
 
 import math
 import torch
+import os
 from typing import Optional, Iterator
-from datasets import load_dataset
+from datasets import load_dataset, load_from_disk
+
+# Directory locale per dataset pre-scaricati (su Vast.ai: esegui prima lo script di download)
+LOCAL_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+
+WIKITEST_PATH = os.path.join(LOCAL_DATA_DIR, "wikitext_test")
+C4_PATH = os.path.join(LOCAL_DATA_DIR, "c4_validation")
+
+
+def _load_dataset_or_fallback(
+    hf_path: str,
+    hf_config: str,
+    hf_split: str,
+    local_path: str,
+    streaming: bool = True,
+):
+    """
+    Prova a caricare un dataset da HuggingFace in streaming.
+    Se fallisce (proxy Vast), carica da disco locale se disponibile.
+    
+    Args:
+        hf_path: nome del dataset HF (es. "Salesforce/wikitext")
+        hf_config: config del dataset (es. "wikitext-2-raw-v1")
+        hf_split: split (es. "test", "validation")
+        local_path: path locale dove il dataset è stato salvato
+        streaming: se usare streaming per HF
+        
+    Returns:
+        dataset
+    """
+    try:
+        return load_dataset(hf_path, hf_config, split=hf_split, streaming=streaming)
+    except Exception as e:
+        print(f"  [WARN] Caricamento da HF fallito ({e})")
+        if os.path.exists(local_path):
+            print(f"  [INFO] Carico da disco: {local_path}")
+            ds = load_from_disk(local_path)
+            if not streaming:
+                # load_from_disk restituisce un Dataset non iterabile se salvato con save_to_disk
+                # Converto in iterabile se necessario
+                pass
+            return ds
+        raise
 
 
 class ConstantLengthDataset:
@@ -62,16 +108,19 @@ def make_c4_train_loader(
 ):
     """
     Crea un iteratore per training su C4 inglese in streaming.
-
-    Args:
-        tokenizer: tokenizer LLaMA
-        seq_length: lunghezza sequenza
-        max_samples: numero massimo di campioni (None = illimitato)
-
-    Returns:
-        iterator su dict con input_ids, labels, attention_mask
+    Fallback: carica da disco se HF non raggiungibile.
     """
-    dataset = load_dataset("allenai/c4", "en", split="train", streaming=True)
+    try:
+        dataset = _load_dataset_or_fallback(
+            "allenai/c4", "en", "train",
+            C4_PATH, streaming=True,
+        )
+    except Exception:
+        print(f"  [WARN] C4 non disponibile, uso Wikitext-2 train come fallback")
+        dataset = _load_dataset_or_fallback(
+            "Salesforce/wikitext", "wikitext-2-raw-v1", "train",
+            WIKITEST_PATH, streaming=True,
+        )
 
     if max_samples is not None:
         dataset = dataset.take(max_samples)
@@ -87,18 +136,11 @@ def make_wikitext_val_loader(
 ):
     """
     Crea un iteratore per validation su Wikitext-2.
-    Restituisce intere sequenze (senza sliding window — lo gestisce la loss).
-
-    Args:
-        tokenizer: tokenizer LLaMA
-        seq_length: lunghezza sequenza
-        stride: stride per sliding window (non usato, mantenuto per interfaccia)
-        max_samples: numero massimo di campioni
-
-    Returns:
-        lista di dict con input_ids, labels, attention_mask
     """
-    dataset = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
+    dataset = _load_dataset_or_fallback(
+        "Salesforce/wikitext", "wikitext-2-raw-v1", "test",
+        WIKITEST_PATH, streaming=True,
+    )
 
     if max_samples is not None:
         dataset = dataset.take(max_samples)
@@ -113,28 +155,33 @@ def prepare_c4_validation_batch(
     device="cuda",
 ):
     """
-    Prepara un batch fisso di validazione da C4 (stesso dominio del training).
-    
-    Usa il validation split di C4, campionando N testi mai visti durante il training.
-    Questo batch viene usato per l'early stopping e il monitoraggio durante il training.
-    
-    Args:
-        tokenizer: tokenizer
-        seq_length: lunghezza sequenza
-        num_samples: numero di campioni
-        device: device
-
-    Returns:
-        dict con input_ids, labels, attention_mask come tensori [N, S]
+    Prepara un batch fisso di validazione.
+    Tenta C4 validation, fallback a Wikitext-2, poi fallback a disco locale.
     """
-    # Shuffle deterministico con seed 42: stesso subset di documenti ad ogni validation step
-    # (se non shufassimo, lo streaming produrrebbe ordine diverso ogni volta → curve WandB non confrontabili)
-    # Fallback: C4 validation può essere bloccato dal proxy Vast → usa Wikitext-2
-    try:
-        dataset = load_dataset("allenai/c4", "en", split="validation", streaming=True)
-        dataset = dataset.shuffle(seed=42, buffer_size=10000).take(num_samples * 2)
-    except Exception:
-        print(f"  [WARN] C4 validation non disponibile, uso Wikitext-2 per validation batch")
+    # Tentativo di caricamento con fallback
+    for attempt_name, hf_path, hf_config, local_path in [
+        ("C4 validation", "allenai/c4", "en", C4_PATH),
+        ("Wikitext-2 test", "Salesforce/wikitext", "wikitext-2-raw-v1", WIKITEST_PATH),
+    ]:
+        try:
+            dataset = load_dataset(hf_path, hf_config, split="test" if "test" in hf_config or "Salesforce" in hf_path else "validation", streaming=True)
+            dataset = dataset.shuffle(seed=42, buffer_size=10000).take(num_samples * 2)
+            print(f"  [INFO] Validation da HF: {attempt_name}")
+            break
+        except Exception:
+            if os.path.exists(local_path):
+                print(f"  [INFO] Validation da disco: {local_path}")
+                dataset = load_from_disk(local_path)
+                dataset = dataset.shuffle(seed=42).take(num_samples * 2)
+                break
+            else:
+                continue
+    else:
+        # Fallback finale: usa Wikitext-2 da HF con retry
+        print(f"  [WARN] Dataset non raggiungibile e nessuna copia locale.")
+        print(f"  Per pre-scaricare: python -c \"from datasets import load_dataset; ds = load_dataset('Salesforce/wikitext', 'wikitext-2-raw-v1', split='test'); ds.save_to_disk('{WIKITEST_PATH}')\"")
+
+        # Ultimo tentativo diretto
         dataset = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
         dataset = dataset.shuffle(seed=42, buffer_size=10000).take(num_samples * 2)
 
@@ -174,18 +221,12 @@ def prepare_validation_batch(
     """
     Prepara un batch fisso di validazione da Wikitext-2.
     Usato per benchmark finale DOPO il training.
-
-    Args:
-        tokenizer: tokenizer
-        seq_length: lunghezza sequenza
-        num_samples: numero di campioni
-        device: device
-
-    Returns:
-        dict con input_ids, labels, attention_mask come tensori [N, S]
     """
-    dataset = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
-    dataset = dataset.take(num_samples)
+    dataset = _load_dataset_or_fallback(
+        "Salesforce/wikitext", "wikitext-2-raw-v1", "test",
+        WIKITEST_PATH, streaming=True,
+    )
+    dataset = dataset.shuffle(seed=42, buffer_size=10000).take(num_samples * 2)
 
     all_input_ids = []
     all_labels = []
@@ -204,7 +245,6 @@ def prepare_validation_batch(
             break
 
     if not all_input_ids:
-        # Fallback: crea batch fittizio
         all_input_ids = [[0] * seq_length]
         all_labels = [[0] * seq_length]
 
