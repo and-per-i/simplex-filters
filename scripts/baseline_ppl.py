@@ -82,55 +82,90 @@ def compute_ppl(
     if dataset == "c4":
         ds = load_dataset("allenai/c4", "en", split="validation", streaming=True)
         dataset_label = "C4 (validation)"
+        print(f"Dataset: {dataset_label}")
+        print(f"Calcolo PPL...")
+
+        total_nll = 0.0
+        total_tokens = 0
+        count = 0
+
+        for example in ds:
+            if count >= max_samples:
+                break
+            text = example.get("text", "")[:10000]
+            if not text.strip():
+                continue
+            enc = tokenizer(text, return_tensors="pt", truncation=True, max_length=seq_length * 2)
+            input_ids = enc["input_ids"]
+            if input_ids.shape[1] < 50:
+                continue
+            input_ids = input_ids.to(device)
+
+            for start in range(0, input_ids.size(1) - 1, stride):
+                end = min(start + seq_length, input_ids.size(1) - 1)
+                chunk = input_ids[:, start:end + 1]
+                outputs = model(chunk, labels=chunk)
+                window_tokens = end - start
+                nll = outputs.loss.item() * window_tokens
+                total_nll += nll
+                total_tokens += window_tokens
+            count += 1
+
+            if count % 10 == 0:
+                current_ppl = math.exp(total_nll / max(total_tokens, 1))
+                print(f"  [{count}/{max_samples}] PPL corrente: {current_ppl:.2f}")
+
     elif dataset == "wikitext":
-        ds = load_dataset("Salesforce/wikitext", "wikitext-2-v1", split="test", streaming=True)
+        # Metodo standard letteratura: concatena tutti i record in un unico stream di token
+        # poi applica sliding window sullo stream intero
+        ds = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
         dataset_label = "Wikitext-2 (test)"
-    else:
-        raise ValueError(f"Dataset sconosciuto: {dataset}, usa 'c4' o 'wikitext'")
+        print(f"Dataset: {dataset_label}")
+        print(f"Concatenamento token in unico stream...")
 
-    print(f"Dataset: {dataset_label}")
-    print(f"Calcolo PPL...")
+        all_tokens = []
+        for example in ds:
+            text = example.get("text", "")
+            if not text.strip():
+                continue
+            tokens = tokenizer.encode(text, add_special_tokens=False)
+            if len(tokens) < 2:
+                continue
+            all_tokens.extend(tokens)
+            # Limita a ~2M token per non esaurire RAM
+            if len(all_tokens) > 2_000_000:
+                break
 
-    total_nll = 0.0
-    total_tokens = 0
-    count = 0
+        total_tokens_in_stream = len(all_tokens)
+        print(f"  Token totali nello stream: {total_tokens_in_stream:,}")
+        print(f"  Calcolo PPL con sliding window (seq={seq_length}, stride={stride})...")
 
-    for example in ds:
-        if count >= max_samples:
-            break
+        all_tokens = torch.tensor(all_tokens, dtype=torch.long, device=device).unsqueeze(0)
 
-        text = example.get("text", "")[:10000]
-        if not text.strip():
-            continue
+        total_nll = 0.0
+        total_tokens = 0
 
-        enc = tokenizer(text, return_tensors="pt", truncation=True, max_length=seq_length * 2)
-        input_ids = enc["input_ids"]
-        if input_ids.shape[1] < 50:  # soglia minima bassa per Wikitext-2-raw (record singola riga)
-            continue
-
-        input_ids = input_ids.to(device)
-
-        # Sliding window su campioni lunghi
-        for start in range(0, input_ids.size(1) - 1, stride):
-            end = min(start + seq_length, input_ids.size(1) - 1)
-            chunk = input_ids[:, start:end + 1]
-
+        for start in range(0, all_tokens.size(1) - 1, stride):
+            end = min(start + seq_length, all_tokens.size(1) - 1)
+            chunk = all_tokens[:, start:end + 1]
             outputs = model(chunk, labels=chunk)
             window_tokens = end - start
             nll = outputs.loss.item() * window_tokens
             total_nll += nll
             total_tokens += window_tokens
 
-        count += 1
+            if (start // stride + 1) % 100 == 0:
+                current_ppl = math.exp(total_nll / max(total_tokens, 1))
+                print(f"  [{(start // stride) + 1} windows] PPL corrente: {current_ppl:.2f}")
 
-        if count % 10 == 0:
-            current_ppl = math.exp(total_nll / max(total_tokens, 1))
-            print(f"  [{count}/{max_samples}] PPL corrente: {current_ppl:.2f}")
+        count = total_tokens_in_stream
+    else:
+        raise ValueError(f"Dataset sconosciuto: {dataset}, usa 'c4' o 'wikitext'")
 
     avg_nll = total_nll / max(total_tokens, 1)
     ppl = math.exp(avg_nll)
 
-    print(f"\n  PPL finale: {ppl:.2f} (su {count} campioni, {total_tokens} token)")
+    print(f"\n  PPL finale: {ppl:.2f} (su {count} token, {total_tokens} finestre)")
 
     results = {
         "model": model_name,
