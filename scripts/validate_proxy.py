@@ -246,24 +246,31 @@ def compute_true_score(
 # ==========================================================================
 def compute_proxy_score_gramdet(
     k_vectors: torch.Tensor,
+    proxy_type: str = "orthogonal",
     n_planes: int = 5000,
-) -> torch.Tensor:
+):
     """
     Calcola lo score proxy per GramDet usando il piano medio della Grassmanniana.
 
-    Costruisce piani da coppie casuali di K (tutte le chiavi sono dello stesso tipo),
-    calcola il piano medio di Fréchet, poi la componente ortogonale ‖k − P̄k‖.
+    Due modalita':
+      - "orthogonal" (default, raccomandata): ‖k − P̄k‖ — componente ortogonale
+        al piano medio. Validazione: Spearman ρ=+0.61 vs ground truth.
+      - "projection" (deprecata): sqrt(σ₁²⟨k,e₂⟩² + σ₂²⟨k,e₁⟩²) — proiezione
+        anisotropa sul piano medio. Validazione: ρ=-0.27 (anti-correlata).
 
     Args:
         k_vectors: chiavi [N, d]
+        proxy_type: "orthogonal" o "projection"
         n_planes: numero di piani da campionare per Frechet mean
 
     Returns:
-        proxy_scores: [N] score ortogonale per ogni chiave
+        proxy_scores: [N] score per ogni chiave
         U_mean: piano medio [d, 2]
+        sigma1, sigma2: solo per "projection", altrimenti 0.0
     """
     from src.geometry.plane import plane_projector_and_basis
-    from src.geometry.grassmann import frechet_mean_planes
+    from src.geometry.grassmann import frechet_mean_planes, q_filters_query_mean
+    from src.kv_cache.qfilter_score import qfilter_score, qfilter_score_orthogonal
 
     N, d = k_vectors.shape
     device = k_vectors.device
@@ -285,13 +292,20 @@ def compute_proxy_score_gramdet(
     # 2. Media di Frechet
     U_mean, P_mean = frechet_mean_planes(U_list, n_iter=10)
 
-    # 3. Score ortogonale: ‖k − P̄k‖
-    P = U_mean @ U_mean.T  # [d, d]
-    k_proj = k_vectors @ P  # [N, d]
-    k_orth = k_vectors - k_proj  # [N, d]
-    proxy_scores = torch.norm(k_orth, dim=-1)  # [N]
+    if proxy_type == "orthogonal":
+        # 3a. Score ortogonale: ‖k − P̄k‖ (raccomandato)
+        proxy_scores = qfilter_score_orthogonal(k_vectors, U_mean)
+        sigma1, sigma2 = 0.0, 0.0
+    else:
+        # 3b. Score proiezione anisotropa: sqrt(σ₁²⟨k,e₂⟩² + σ₂²⟨k,e₁⟩²)
+        #     (deprecato — ρ=-0.27)
+        q_mean = q_filters_query_mean(k_vectors)
+        q_proj = U_mean.T @ k_vectors.T  # [2, N]
+        U_svd, sigma, Vh_svd = torch.linalg.svd(q_proj.float(), full_matrices=False)
+        sigma1, sigma2 = sigma[0].item(), sigma[1].item()
+        proxy_scores = qfilter_score(k_vectors.float(), sigma1, sigma2, U_mean.float())
 
-    return proxy_scores, U_mean
+    return proxy_scores, U_mean, sigma1, sigma2
 
 
 def compute_proxy_score_trilinear(
@@ -468,11 +482,11 @@ def main():
     print(f"\n{BOLD}FASE 2/2: Calcolo PROXY score (Q-filter ortogonale){NC}")
 
     if args.attention_type == "gram_det":
-        proxy_scores, U_mean = compute_proxy_score_gramdet(
-            k_vectors.to(device),
+        proxy_scores, U_mean, sigma1, sigma2 = compute_proxy_score_gramdet(
+            k_vectors.to(device), proxy_type=args.proxy_type,
         )
-        proxy_label = "ortogonale (∥k − P̄k∥)"
-        print(f"  PROXY score ({proxy_label})")
+        proxy_label = "ortogonale (∥k − P̄k∥)" if args.proxy_type == "orthogonal" else "proiezione (Q-filter, deprecato)"
+        print(f"  PROXY score ({proxy_label}): σ₁={sigma1:.4f}, σ₂={sigma2:.4f}")
 
         # Concatena per correlazione (GramDet: tutto in un unico array)
         true_all = true_scores
