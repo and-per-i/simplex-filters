@@ -269,6 +269,7 @@ def train(config: dict):
     optimizer = torch.optim.AdamW(
         param_groups,
         betas=(config["beta1"], config["beta2"]),
+        foreach=False,  # PyTorch 2.12 bug fix: evita _multi_tensor_adam crash con gruppi lr~0
     )
 
     # --- Scheduler manuale (PyTorch 2.12 LambdaLR ha bug con gruppi multipli) ---

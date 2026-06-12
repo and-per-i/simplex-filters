@@ -107,7 +107,7 @@ def create_optimizer_groups(
         print(f"  GramDet:  {gram_det_count:>10,} params (lr={lr_k2v2})")
         print(f"  Trainable: {trainable:,}/{total:,} ({100*trainable/total:.2f}%)")
         return [
-            {"params": frozen_params, "lr": 1e-10, "weight_decay": 0.0},
+            {"params": frozen_params, "lr": 1e-10, "weight_decay": weight_decay},
             {"params": standard_params, "lr": lr_standard, "weight_decay": weight_decay},
             {"params": gram_det_params, "lr": lr_k2v2, "weight_decay": weight_decay},
         ]
@@ -119,7 +119,7 @@ def create_optimizer_groups(
         print(f"  K2/V2 (lr={lr_k2v2}): {sum(p.numel() for p in k2v2_params):>10,} params")
         print(f"  Trainable: {trainable:,}/{total:,} ({100*trainable/total:.2f}%)")
         return [
-            {"params": frozen_params, "lr": 1e-10, "weight_decay": 0.0},
+            {"params": frozen_params, "lr": 1e-10, "weight_decay": weight_decay},
             {"params": standard_params, "lr": lr_standard, "weight_decay": weight_decay},
             {"params": k1v1_params, "lr": lr_k1v1, "weight_decay": weight_decay},
             {"params": k2v2_params, "lr": lr_k2v2, "weight_decay": weight_decay},
