@@ -156,32 +156,16 @@ def prepare_c4_validation_batch(
 ):
     """
     Prepara un batch fisso di validazione.
-    Tenta C4 validation, fallback a Wikitext-2, poi fallback a disco locale.
+    Carica da disco locale se disponibile, altrimenti da HuggingFace.
     """
-    # Tentativo di caricamento con fallback
-    for attempt_name, hf_path, hf_config, local_path in [
-        ("C4 validation", "allenai/c4", "en", C4_PATH),
-        ("Wikitext-2 test", "Salesforce/wikitext", "wikitext-2-raw-v1", WIKITEST_PATH),
-    ]:
-        try:
-            dataset = load_dataset(hf_path, hf_config, split="test" if "test" in hf_config or "Salesforce" in hf_path else "validation", streaming=True)
-            dataset = dataset.shuffle(seed=42, buffer_size=10000).take(num_samples * 2)
-            print(f"  [INFO] Validation da HF: {attempt_name}")
-            break
-        except Exception:
-            if os.path.exists(local_path):
-                print(f"  [INFO] Validation da disco: {local_path}")
-                dataset = load_from_disk(local_path)
-                dataset = dataset.shuffle(seed=42).take(num_samples * 2)
-                break
-            else:
-                continue
+    # Carica da disco locale (pre-scaricato con save_to_disk)
+    if os.path.exists(WIKITEST_PATH):
+        print(f"  [INFO] Validation da disco: {WIKITEST_PATH}")
+        import datasets
+        dataset = datasets.load_from_disk(WIKITEST_PATH)
+        dataset = dataset.shuffle(seed=42).select(range(min(num_samples * 2, len(dataset))))
     else:
-        # Fallback finale: usa Wikitext-2 da HF con retry
-        print(f"  [WARN] Dataset non raggiungibile e nessuna copia locale.")
-        print(f"  Per pre-scaricare: python -c \"from datasets import load_dataset; ds = load_dataset('Salesforce/wikitext', 'wikitext-2-raw-v1', split='test'); ds.save_to_disk('{WIKITEST_PATH}')\"")
-
-        # Ultimo tentativo diretto
+        print(f"  [INFO] Validation da HF: Wikitext-2 test")
         dataset = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
         dataset = dataset.shuffle(seed=42, buffer_size=10000).take(num_samples * 2)
 

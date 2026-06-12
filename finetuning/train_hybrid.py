@@ -271,15 +271,19 @@ def train(config: dict):
         betas=(config["beta1"], config["beta2"]),
     )
 
-    # --- Scheduler (warmup lineare) ---
-    def get_lr(step):
-        if step < config["warmup_steps"]:
-            return step / config["warmup_steps"]
-        return 1.0 - (step - config["warmup_steps"]) / max(config["max_steps"] - config["warmup_steps"], 1)
+    # --- Scheduler manuale (PyTorch 2.12 LambdaLR ha bug con gruppi multipli) ---
+    # Salviamo i base_lr iniziali per ogni gruppo
+    initial_lrs = [group["lr"] for group in optimizer.param_groups]
 
-    # PyTorch 2.12+ richiede lr_lambda come lista per gruppi multipli
-    lr_lambdas = [get_lr for _ in param_groups]
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambdas)
+    def update_lr(step):
+        """Aggiorna manualmente il LR per tutti i gruppi (warmup lineare + decay)."""
+        if step < config["warmup_steps"]:
+            scale = step / config["warmup_steps"]
+        else:
+            scale = 1.0 - (step - config["warmup_steps"]) / max(config["max_steps"] - config["warmup_steps"], 1)
+        scale = max(scale, 1e-8)
+        for i, group in enumerate(optimizer.param_groups):
+            group["lr"] = initial_lrs[i] * scale
 
     # --- Dataset ---
     print(f"\n[5/5] Dataset: {config['dataset_name']}/{config['dataset_config']} (streaming)")
@@ -331,7 +335,7 @@ def train(config: dict):
         if os.path.exists(state_path):
             training_state = torch.load(state_path, map_location=device)
             optimizer.load_state_dict(training_state["optimizer"])
-            scheduler.load_state_dict(training_state["scheduler"])
+            update_lr(training_state["step"])
             resume_step = training_state["step"]
             best_ppl = training_state.get("best_ppl", float('inf'))
             print(f"  Riprendo da step {resume_step} (best PPL: {best_ppl:.2f})")
@@ -383,7 +387,7 @@ def train(config: dict):
 
             # Optimizer step
             optimizer.step()
-            scheduler.step()
+            update_lr(global_step)
             optimizer.zero_grad()
 
             # Log training loss
@@ -461,10 +465,10 @@ def train(config: dict):
             model.save_pretrained(ckpt_path)
             tokenizer.save_pretrained(ckpt_path)
             torch.save({
-                "optimizer": optimizer.state_dict(),
-                "scheduler": scheduler.state_dict(),
-                "step": global_step,
-                "best_ppl": best_ppl,
+            "optimizer": optimizer.state_dict(),
+            "scheduler_lrs": initial_lrs,
+            "step": global_step,
+            "best_ppl": best_ppl,
             }, os.path.join(ckpt_path, "training_state.pt"))
             log_metrics({"train/checkpoint_saved": global_step}, global_step, wandb_active)
 
