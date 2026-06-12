@@ -105,7 +105,7 @@ def compute_ppl(
 
         enc = tokenizer(text, return_tensors="pt", truncation=True, max_length=seq_length * 2)
         input_ids = enc["input_ids"]
-        if input_ids.shape[1] < seq_length:
+        if input_ids.shape[1] < 50:  # soglia minima bassa per Wikitext-2-raw (record singola riga)
             continue
 
         input_ids = input_ids.to(device)
