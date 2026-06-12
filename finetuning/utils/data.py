@@ -129,8 +129,14 @@ def prepare_c4_validation_batch(
     """
     # Shuffle deterministico con seed 42: stesso subset di documenti ad ogni validation step
     # (se non shufassimo, lo streaming produrrebbe ordine diverso ogni volta → curve WandB non confrontabili)
-    dataset = load_dataset("allenai/c4", "en", split="validation", streaming=True)
-    dataset = dataset.shuffle(seed=42, buffer_size=10000).take(num_samples * 2)
+    # Fallback: C4 validation può essere bloccato dal proxy Vast → usa Wikitext-2
+    try:
+        dataset = load_dataset("allenai/c4", "en", split="validation", streaming=True)
+        dataset = dataset.shuffle(seed=42, buffer_size=10000).take(num_samples * 2)
+    except Exception:
+        print(f"  [WARN] C4 validation non disponibile, uso Wikitext-2 per validation batch")
+        dataset = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
+        dataset = dataset.shuffle(seed=42, buffer_size=10000).take(num_samples * 2)
 
     all_input_ids = []
     all_labels = []
