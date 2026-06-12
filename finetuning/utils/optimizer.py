@@ -26,6 +26,12 @@ def create_optimizer_groups(
     weight_decay: float = 0.01,
     attention_type: str = "simplicial",
 ):
+    # Forza tipo float (YAML può parsare scientifici come stringa)
+    lr_k2v2 = float(lr_k2v2)
+    lr_k1v1 = float(lr_k1v1)
+    lr_standard = float(lr_standard)
+    weight_decay = float(weight_decay)
+
     """
     Crea i gruppi di parametri per AdamW.
 

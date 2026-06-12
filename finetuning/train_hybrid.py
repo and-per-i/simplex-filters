@@ -256,7 +256,7 @@ def train(config: dict):
 
     # --- Ottimizzatore ---
     print(f"\n[4/5] Creazione ottimizzatore...")
-    lr_standard = config.get("lr_standard", 5e-6)
+    lr_standard = float(config.get("lr_standard", 5e-6))
     param_groups = create_optimizer_groups(
         model,
         simplicial_indices=config["simplicial_indices"],
@@ -365,7 +365,7 @@ def train(config: dict):
     early_stopped = False
     patience_counter = 0
     max_patience = 3
-    early_stop_ppl = config.get("early_stop_ppl", None)
+    early_stop_ppl = float(config.get("early_stop_ppl", float('inf'))) if config.get("early_stop_ppl") is not None else None
 
     for batch in train_loader:
         if global_step >= config["max_steps"]:
