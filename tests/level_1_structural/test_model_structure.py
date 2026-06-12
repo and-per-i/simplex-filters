@@ -199,11 +199,14 @@ class TestFrozenParameters:
     """Verifica che solo K1/V1/K2/V2 siano trainable."""
 
     def test_all_other_layers_frozen(self, hybrid_fixture):
-        """Tutti i parametri FUORI dai layer simpliciali sono frozen."""
+        """Tutti i parametri FUORI dai layer simpliciali sono frozen (embed/lm_head esclusi: frozen dall'optimizer, non dal modello)."""
         model = hybrid_fixture["model"]
         simplicial_indices = hybrid_fixture["simplicial_indices"]
 
         for name, param in model.named_parameters():
+            # embed_tokens e lm_head sono congelati via optimizer (lr=0 in create_optimizer_groups())
+            if "embed" in name or "lm_head" in name:
+                continue
             in_simplicial = any(f"layers.{idx}." in name for idx in simplicial_indices)
             if not in_simplicial:
                 assert not param.requires_grad, \
