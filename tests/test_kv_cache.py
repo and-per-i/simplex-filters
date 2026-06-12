@@ -2,11 +2,12 @@
 Test per il pacchetto kv_cache (Q-filter, eviction, benchmark).
 
 Verifica su dati sintetici (CPU, senza modello reale):
-1. Q-filter score: formula corretta, monotonicità
-2. top_k_indices: shape, ordinamento
-3. random_indices: shape, riproducibilità
-4. evict_keys: shape, strategia
-5. BenchmarkResult: summary() produce output valido
+1. Q-filter score ortogonale: formula corretta, proprieta'
+2. Q-filter score (deprecato): mantenuto solo per riproducibilita'
+3. top_k_indices: shape, ordinamento
+4. random_indices: shape, riproducibilita'
+5. evict_keys: shape, strategia
+6. BenchmarkResult: summary() produce output valido
 """
 
 import pytest
@@ -19,6 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from kv_cache.qfilter_score import (
     qfilter_score,
+    qfilter_score_orthogonal,
     qfilter_score_single,
     top_k_indices,
     random_indices,
@@ -28,11 +30,78 @@ from kv_cache.benchmark import BenchmarkResult
 
 
 # ======================================================================
-# Test: Q-filter score
+# Test: Q-filter score ortogonale (FORMULA PRIMARIA)
+# ======================================================================
+
+class TestQFilterScoreOrthogonal:
+    """Verifica che qfilter_score_orthogonal sia calcolato correttamente."""
+
+    def test_orthogonal_shape(self):
+        """Input [N, d] → output [N]."""
+        k = torch.randn(100, 32)
+        U_mean = torch.eye(32)[:, :2]
+        scores = qfilter_score_orthogonal(k, U_mean)
+        assert scores.shape == (100,), f"Shape: {scores.shape}"
+
+    def test_orthogonal_non_negative(self):
+        """Score ortogonale non negativo (norma)."""
+        k = torch.randn(50, 16)
+        U_mean = torch.eye(16)[:, :2]
+        scores = qfilter_score_orthogonal(k, U_mean)
+        assert (scores >= 0).all(), "Score negativo!"
+
+    def test_orthogonal_zero_for_plane_keys(self):
+        """Chiave nel piano medio → score = 0 (nessuna componente ortogonale)."""
+        d = 32
+        U_mean = torch.eye(d)[:, :2]  # piano = prime 2 dimensioni
+        e1 = U_mean[:, 0]  # [d]
+        e2 = U_mean[:, 1]  # [d]
+
+        # Chiave nel piano = combinazione lineare di e1, e2
+        k_in_plane = 3.0 * e1 + 1.5 * e2
+        scores = qfilter_score_orthogonal(k_in_plane.unsqueeze(0), U_mean)
+        assert scores.item() < 1e-5, f"Score per key nel piano = {scores.item()}"
+
+    def test_orthogonal_positive_for_orthogonal_key(self):
+        """Chiave ortogonale al piano → score > 0."""
+        d = 32
+        U_mean = torch.eye(d)[:, :2]
+        
+        # Chiave ortogonale (usa dimensione 3, fuori dal piano)
+        k_orth = torch.zeros(d)
+        k_orth[2] = 1.0
+        
+        scores = qfilter_score_orthogonal(k_orth.unsqueeze(0), U_mean)
+        assert scores.item() > 0.5, f"Score per key ortogonale = {scores.item()}"
+
+    def test_orthogonal_monotonic(self):
+        """Piu' lontana dal piano → score piu' alto."""
+        d = 32
+        U_mean = torch.eye(d)[:, :2]
+        
+        # Due chiavi: una vicina, una lontana dal piano
+        k_close = torch.zeros(d)
+        k_close[0] = 0.5  # vicina al piano (dimensione 0 = e1)
+        
+        k_far = torch.zeros(d)
+        k_far[2] = 2.0  # lontana dal piano
+        
+        scores = qfilter_score_orthogonal(
+            torch.stack([k_close, k_far]), U_mean
+        )
+        assert scores[1] > scores[0], f"k_far={scores[1]:.4f} dovrebbe > k_close={scores[0]:.4f}"
+
+
+# ======================================================================
+# Test: Q-filter score (DEPRECATO, mantenuto per riproducibilita')
 # ======================================================================
 
 class TestQFilterScore:
-    """Verifica che il Q-filter score sia calcolato correttamente."""
+    """Verifica che il Q-filter score (anisotropo) sia calcolato correttamente.
+    
+    NOTA: Questa formula e' DEPRECATA (Spearman ρ=-0.27).
+    I test sono mantenuti solo per non rompere la riproducibilita'.
+    """
 
     def test_qfilter_score_shape(self):
         """Input [N, d] → output [N]."""
@@ -122,13 +191,13 @@ class TestSelectIndices:
 # ======================================================================
 
 class TestEvictKeys:
-    """Verifica la funzione di eviction."""
+    """Verifica la funzione di eviction (ora usa qfilter_score_orthogonal)."""
 
     def test_evict_qfilter_shape(self):
         """Eviction restituisce [B, d] e [B]."""
         keys = torch.randn(100, 32)
         U_mean = torch.eye(32)[:, :2]
-        survived, indices = evict_keys(keys, 1.0, 1.0, U_mean, budget=0.3)
+        survived, indices = evict_keys(keys, U_mean, budget=0.3)
         assert survived.shape == (30, 32), f"Shape keys: {survived.shape}"
         assert indices.shape == (30,), f"Shape indices: {indices.shape}"
 
@@ -136,16 +205,35 @@ class TestEvictKeys:
         """Eviction random restituisce [B, d]."""
         keys = torch.randn(100, 16)
         U_mean = torch.eye(16)[:, :2]
-        survived, indices = evict_keys(keys, 1.0, 1.0, U_mean, budget=0.5,
+        survived, indices = evict_keys(keys, U_mean, budget=0.5,
                                         strategy="random")
         assert survived.shape == (50, 16)
+
+    def test_evict_qfilter_preserves_atypical(self):
+        """Eviction qfilter preserva chiavi atipiche (ortogonali al piano)."""
+        d = 32
+        U_mean = torch.eye(d)[:, :2]
+        
+        # Crea 100 chiavi: 50 nel piano, 50 ortogonali
+        keys = torch.randn(100, d)
+        keys[:50, :2] = torch.randn(50, 2)  # nel piano
+        keys[50:, 2:] = torch.randn(50, d - 2)  # ortogonali
+        
+        survived, indices = evict_keys(keys, U_mean, budget=0.5)
+        
+        # La maggior parte delle sopravvissute dovrebbero essere ortogonali
+        surv_orth_frac = (indices >= 50).float().mean().item()
+        assert surv_orth_frac > 0.5, (
+            f"Solo {surv_orth_frac*100:.0f}% ortogonali preservate "
+            f"(ci si aspetta >50%)"
+        )
 
     def test_evict_strategy_error(self):
         """Strategia sconosciuta → errore."""
         keys = torch.randn(10, 4)
         U_mean = torch.eye(4)[:, :2]
         with pytest.raises(ValueError):
-            evict_keys(keys, 1.0, 1.0, U_mean, budget=0.5, strategy="unknown")
+            evict_keys(keys, U_mean, budget=0.5, strategy="unknown")
 
 
 # ======================================================================

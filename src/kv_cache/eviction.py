@@ -6,20 +6,25 @@ essere formate solo da chiavi sopravvissute. Questo significa che se una
 chiave e' stata eliminata, non partecipera' a NESSUNA coppia.
 
 L'eviction Q-filter e' UNA SOLA: si calcola lo score per ogni singola
-chiave usando il piano medio pesato, si ordinano, si tengono le top-B,
+chiave usando la componente ortogonale al piano medio (‖k − P̄k‖),
+si ordinano per score decrescente, si tengono le top-B,
 e le chiavi eliminate sono semplicemente assenti dalla KV cache.
+
+Formula valida (Spearman ρ=+0.61 per GramDet, ρ=+0.50 per trilineare):
+    score(k_j) = ‖k_j − P̄ k_j‖  (componente ortogonale al piano medio)
+
+NOTA: La formula di proiezione anisotropa (qfilter_score con σ₁, σ₂)
+e' stata deprecata perche' anti-correlata (ρ=-0.27 contro ρ=+0.61).
 """
 
 import torch
 from typing import Optional
 
-from src.kv_cache.qfilter_score import qfilter_score, top_k_indices, random_indices
+from src.kv_cache.qfilter_score import qfilter_score_orthogonal, top_k_indices, random_indices
 
 
 def evict_keys(
     keys: torch.Tensor,
-    sigma1: float,
-    sigma2: float,
     U_mean: torch.Tensor,
     budget: float,
     strategy: str = "qfilter",
@@ -27,10 +32,12 @@ def evict_keys(
     """
     Applica eviction sulle chiavi e restituisce quelle sopravvissute.
 
+    Usa lo score ortogonale ‖k − P̄k‖ (qfilter_score_orthogonal):
+    - Score alto → chiave atipica (lontana dal piano medio) → preservata
+    - Score basso → chiave tipica (vicina al piano medio) → candidata a eviction
+
     Args:
         keys: tutte le chiavi nella finestra [N, d]
-        sigma1: σ₁ dall'analisi geometrica
-        sigma2: σ₂ dall'analisi geometrica
         U_mean: base del piano medio [d, 2]
         budget: frazione da tenere (0.5, 0.3, 0.1)
         strategy: "qfilter" o "random"
@@ -42,7 +49,7 @@ def evict_keys(
     N = keys.shape[0]
 
     if strategy == "qfilter":
-        scores = qfilter_score(keys, sigma1, sigma2, U_mean)
+        scores = qfilter_score_orthogonal(keys, U_mean)
         indices = top_k_indices(scores, budget)
     elif strategy == "random":
         indices = random_indices(N, budget)
@@ -55,8 +62,6 @@ def evict_keys(
 def compute_perplexity_with_eviction(
     model,
     input_ids: torch.Tensor,
-    sigma1: float,
-    sigma2: float,
     U_mean: torch.Tensor,
     budget: float,
     window_size: int = 512,
@@ -73,7 +78,7 @@ def compute_perplexity_with_eviction(
     Args:
         model: modello ibrido
         input_ids: input token [B, S]
-        sigma1, sigma2, U_mean: parametri geometrici (per layer)
+        U_mean: base del piano medio [d, 2]
         budget: frazione da tenere
         window_size: finestra K1 (default 512)
         strategy: "qfilter" o "random"

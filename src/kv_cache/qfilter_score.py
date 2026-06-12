@@ -1,21 +1,32 @@
 """
 qfilter_score.py — Calcolo dello score di eviction Q-filter.
 
-Formula per trilineare (geometria per-token, K1 != K2):
-    Score(k_j) = sqrt(σ₁² · ⟨k_j, e₂⟩² + σ₂² · ⟨k_j, e₁⟩²)
-
-Formula per GramDet (geometria per-coppia, K1 == K2):
+FORMULA PRIMARIA (raccomandata):
     Score(k_j) = ‖k_j - P̄ k_j‖  (componente ortogonale al piano medio)
+    Usata da: qfilter_score_orthogonal()
+    Validazione: Spearman ρ=+0.61 (GramDet), ρ=+0.50 (trilineare)
+
+    Premia le chiavi ATIPICHE (ortogonali al piano medio). Cio' significa
+    che le chiavi piu' informative sono quelle che si discostano dal piano
+    medio — coerentemente con l'idea che il piano medio catturi il
+    comportamento "tipico" e le chiavi atipiche portino informazione nuova.
+
+FORMULA SECONDARIA (DEPRECATA, solo per confronto):
+    Score(k_j) = sqrt(σ₁² · ⟨k_j, e₂⟩² + σ₂² · ⟨k_j, e₁⟩²)
+    Usata da: qfilter_score()
+    Validazione: Spearman ρ=-0.27 — ANTI-CORRELATA, NON USARE.
+
+    Questa formula premia le chiavi vicine al piano medio (tipiche), ma
+    la validazione empirica mostra che e' anti-correlata al vero ordine
+    di importanza. Mantenuta solo per riproducibilita' dei risultati.
 
 Dove:
     σ₁, σ₂ = valori singolari della distribuzione query nel piano medio (anisotropia)
     e₁, e₂ = vettori della base del piano medio (colonne di U_mean ∈ R^{d×2})
     P̄ = proiettore ortogonale sul piano medio (U_mean @ U_mean^T)
 
-Nota:
-    La formula per GramDet e' diversa perche' premia le chiavi ATIPICHE
-    (ortogonali al piano medio), non quelle tipiche. Validato empiricamente:
-    r=-0.27 con formula classica vs r=+0.61 con formula ortogonale.
+Riferimento:
+    validate_proxy.py — script di validazione empirica che ha prodotto r=+0.61.
 """
 
 import torch

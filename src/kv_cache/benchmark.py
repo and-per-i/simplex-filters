@@ -3,13 +3,18 @@ benchmark.py — Benchmark delle performance di eviction Q-filter.
 
 Per ogni budget B in [100%, 50%, 30%, 10%]:
 1. Carica checkpoint addestrato (trilineare o Gram Det)
-2. Calcola analisi geometrica UNA SOLA VOLTA (σ₁, σ₂, e₁, e₂)
+2. Calcola analisi geometrica UNA SOLA VOLTA (U_mean, σ₁, σ₂)
 3. Per ogni token i in Wikitext-2:
    a. Estrai k_j nella finestra w1=512
-   b. Calcola Q-filter score per ogni k_j
-   c. Tieni solo top-B chiavi
+   b. Calcola Q-filter score ortogonale ‖k − P̄k‖ per ogni k_j
+   c. Tieni solo top-B chiavi (score alto = chiave atipica = preservata)
 4. Misura perplexity
 5. Ripeti con random eviction
+
+NOTA: La formula usata e' qfilter_score_orthogonal (‖k − P̄k‖),
+validata con Spearman ρ=+0.61 (GramDet) e ρ=+0.50 (trilineare).
+La formula anisotropa di proiezione (qfilter_score) non e' piu' usata
+perche' anti-correlata (ρ=-0.27).
 
 Output: 4 curve PPL vs B su WandB + stdout.
 """
@@ -20,7 +25,7 @@ import os
 from typing import Dict, List, Optional
 from dataclasses import dataclass, field
 
-from src.kv_cache.qfilter_score import qfilter_score, top_k_indices, random_indices
+from src.kv_cache.qfilter_score import qfilter_score_orthogonal, top_k_indices, random_indices
 
 
 @dataclass
@@ -43,17 +48,12 @@ class BenchmarkResult:
         return "\n".join(lines)
 
 
-def _set_model_eviction(model, simplicial_indices, sigma1, sigma2, U_mean, budget, strategy, attention_type):
+def _set_model_eviction(model, simplicial_indices, U_mean, budget, strategy):
     """Imposta eviction_params sui layer simpliciali del modello."""
-    if attention_type != "simplicial":
-        return  # GramDet non supporta eviction Q-filter
-    
     for idx in simplicial_indices:
         attn = model.model.layers[idx].self_attn
         if hasattr(attn, "eviction_params"):
             attn.eviction_params = {
-                "sigma1": sigma1,
-                "sigma2": sigma2,
                 "U_mean": U_mean,
                 "budget": budget,
                 "strategy": strategy,
@@ -83,6 +83,9 @@ def benchmark_checkpoint(
 ) -> BenchmarkResult:
     """
     Benchmark di eviction su un checkpoint addestrato.
+
+    Usa qfilter_score_orthogonal (‖k − P̄k‖) come proxy valido per
+    preservare le chiavi atipiche (lontane dal piano medio).
 
     Args:
         checkpoint_path: path al checkpoint
@@ -139,12 +142,9 @@ def benchmark_checkpoint(
     layer_idx = 16
     if layer_idx in geo_results:
         layer_data = geo_results[layer_idx]
-        sigma1 = layer_data["query_sigma1"]
-        sigma2 = layer_data["query_sigma2"]
         U_mean = layer_data["U_mean"].to(device)
     else:
         print(f"Layer {layer_idx} non trovato, uso valori di default")
-        sigma1, sigma2 = 1.0, 1.0
         U_mean = torch.eye(128, device=device)[:, :2]
 
     result = BenchmarkResult(model_name=os.path.basename(checkpoint_path))
@@ -161,21 +161,21 @@ def benchmark_checkpoint(
     for budget in budgets:
         print(f"\n  Budget: {budget*100:.0f}%")
 
-        # Q-filter eviction
-        _set_model_eviction(model, simplicial_indices, sigma1, sigma2, U_mean, budget, "qfilter", attention_type)
+        # Q-filter eviction (ortogonale — ‖k − P̄k‖)
+        _set_model_eviction(model, simplicial_indices, U_mean, budget, "qfilter")
         ppl_qf = _eval_ppl_with_eviction(
-            model, tokenizer, dataset, U_mean, sigma1, sigma2,
+            model, tokenizer, dataset, U_mean,
             budget=budget, strategy="qfilter",
             seq_length=seq_length, num_batches=num_batches, device=device,
         )
         _clear_model_eviction(model, simplicial_indices)
         result.ppl_qfilter[budget] = ppl_qf
-        print(f"    Q-filter PPL: {ppl_qf:.2f}")
+        print(f"    Q-filter (ortogonale) PPL: {ppl_qf:.2f}")
 
         # Random eviction baseline
-        _set_model_eviction(model, simplicial_indices, sigma1, sigma2, U_mean, budget, "random", attention_type)
+        _set_model_eviction(model, simplicial_indices, U_mean, budget, "random")
         ppl_rand = _eval_ppl_with_eviction(
-            model, tokenizer, dataset, U_mean, sigma1, sigma2,
+            model, tokenizer, dataset, U_mean,
             budget=budget, strategy="random",
             seq_length=seq_length, num_batches=num_batches, device=device,
         )
@@ -211,7 +211,7 @@ def benchmark_checkpoint(
 
 def _eval_ppl_with_eviction(
     model, tokenizer, dataset,
-    U_mean, sigma1, sigma2,
+    U_mean,
     budget: float,
     strategy: str,
     seq_length: int = 256,
