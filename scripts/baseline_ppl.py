@@ -31,7 +31,8 @@ def compute_ppl(
     model_name: str,
     dataset: str = "c4",
     max_samples: int = 50,
-    seq_length: int = 256,
+    seq_length: int = 512,
+    stride: int = 256,
     device: str = "cuda",
     output: Optional[str] = None,
 ) -> float:
@@ -98,20 +99,28 @@ def compute_ppl(
         if count >= max_samples:
             break
 
-        text = example.get("text", "")
+        text = example.get("text", "")[:10000]
         if not text.strip():
             continue
 
-        enc = tokenizer(text, return_tensors="pt", truncation=True, max_length=seq_length)
+        enc = tokenizer(text, return_tensors="pt", truncation=True, max_length=seq_length * 2)
         input_ids = enc["input_ids"]
-        if input_ids.shape[1] < 10:
+        if input_ids.shape[1] < seq_length:
             continue
 
         input_ids = input_ids.to(device)
-        outputs = model(input_ids, labels=input_ids)
-        nll = outputs.loss.item() * (input_ids.shape[1] - 1)
-        total_nll += nll
-        total_tokens += input_ids.shape[1] - 1
+
+        # Sliding window su campioni lunghi
+        for start in range(0, input_ids.size(1) - 1, stride):
+            end = min(start + seq_length, input_ids.size(1) - 1)
+            chunk = input_ids[:, start:end + 1]
+
+            outputs = model(chunk, labels=chunk)
+            window_tokens = end - start
+            nll = outputs.loss.item() * window_tokens
+            total_nll += nll
+            total_tokens += window_tokens
+
         count += 1
 
         if count % 10 == 0:
@@ -151,8 +160,10 @@ def main():
                         help="Dataset per la valutazione (default: c4)")
     parser.add_argument("--max-samples", type=int, default=50,
                         help="Numero massimo di campioni (default: 50)")
-    parser.add_argument("--seq-length", type=int, default=256,
-                        help="Lunghezza sequenza (default: 256)")
+    parser.add_argument("--seq-length", type=int, default=512,
+                        help="Lunghezza sequenza per finestra (default: 512)")
+    parser.add_argument("--stride", type=int, default=256,
+                        help="Stride per sliding window (default: 256)")
     parser.add_argument("--output", type=str, default=None,
                         help="Salva risultati in JSON (opzionale)")
     parser.add_argument("--device", type=str, default="cuda",
@@ -166,6 +177,7 @@ def main():
         dataset=args.dataset,
         max_samples=args.max_samples,
         seq_length=args.seq_length,
+        stride=args.stride,
         device=args.device,
         output=args.output,
     )
