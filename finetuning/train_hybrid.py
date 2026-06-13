@@ -199,7 +199,7 @@ def _do_train(config: dict):
             if global_step % log_every == 0 and local_rank == 0:
                 avg_loss = total_loss / log_every
                 elapsed = time.time() - start_time
-                current_lr = scheduler.get_last_lr()[0]
+                current_lr = max(scheduler.get_last_lr())
                 print(f"Step {global_step}/{max_steps} | Loss: {avg_loss:.4f} | LR: {current_lr:.2e} | Time: {elapsed:.1f}s")
                 wandb.log({"train/loss": avg_loss, "train/lr": current_lr, "train/step": global_step})
                 total_loss = 0.0
