@@ -21,6 +21,7 @@ LOCAL_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data"
 
 WIKITEST_PATH = os.path.join(LOCAL_DATA_DIR, "wikitext_test")
 C4_PATH = os.path.join(LOCAL_DATA_DIR, "c4_validation")
+C4_TRAIN_PATH = os.path.join(LOCAL_DATA_DIR, "c4_train")
 
 
 def _load_dataset_or_fallback(
@@ -108,8 +109,19 @@ def make_c4_train_loader(
 ):
     """
     Crea un iteratore per training su C4 inglese in streaming.
-    Fallback: carica da disco se HF non raggiungibile.
+    Se il dataset locale C4_TRAIN_PATH esiste (scaricato con download_c4.py), lo usa direttamente.
+    Fallback: carica da disco C4_validation, poi Wikitext-2 se HF non raggiungibile.
     """
+    # Priorità 1: dataset C4 locale completo
+    if os.path.exists(C4_TRAIN_PATH):
+        print(f"  [INFO] C4 training locale: {C4_TRAIN_PATH}")
+        import datasets
+        full_ds = datasets.load_from_disk(C4_TRAIN_PATH)
+        if max_samples is not None:
+            full_ds = full_ds.select(range(min(max_samples, len(full_ds))))
+        return ConstantLengthDataset(tokenizer, full_ds, seq_length=seq_length)
+
+    # Priorità 2: HF streaming o C4_validation fallback
     try:
         dataset = _load_dataset_or_fallback(
             "allenai/c4", "en", "train",

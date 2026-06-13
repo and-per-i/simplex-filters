@@ -37,7 +37,7 @@ beta1: 0.9
 beta2: 0.95
 
 # Resume checkpoint
-resume_checkpoint: "./trilinear/checkpoint-10000"
+resume_checkpoint: "./trilinear/checkpoint-14000"
 
 # Monitoring
 log_every: 10
