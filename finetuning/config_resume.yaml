@@ -43,7 +43,7 @@ resume_checkpoint: "./trilinear/checkpoint-10000"
 log_every: 10
 val_every: 500
 save_every: 2000
-early_stop_ppl: 9999
+early_stop_ppl: 0
 max_perplexity_gap: 10.0
 
 # Weights & Biases
