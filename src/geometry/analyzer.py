@@ -190,7 +190,7 @@ def analyze_checkpoint(
     tokenizer.pad_token = tokenizer.eos_token
     
     # Dataset di analisi (da disco locale se disponibile, per bypassare proxy Vast)
-    wikitext_local = os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "data", "wikitext_test")
+    wikitext_local = "./data/wikitext_test"
     if os.path.exists(wikitext_local):
         if verbose:
             print(f"  Dataset di analisi da disco: {wikitext_local}")
