@@ -70,17 +70,23 @@ def _resume_scheduler(optimizer, start_step: int, max_steps: int, eta_min: float
 
     Calcola il LR iniziale dalla formula del coseno e crea uno scheduler
     con last_epoch=start_step per continuare da li'.
+
+    Nota: PyTorch richiede che initial_lr sia impostato nei param_groups
+    quando last_epoch >= 0 (resume). Lo settiamo esplicitamente.
     """
     progress = start_step / max_steps
     lr_factor = 0.5 * (1 + math.cos(math.pi * progress))
 
-    # Applica il fattore al LR di ogni gruppo (salta i frozen con LR=1e-10)
+    # PyTorch scheduler richiede initial_lr per resume
     for group in optimizer.param_groups:
+        group.setdefault("initial_lr", group["lr"])
         if group["lr"] > 1e-9:
             group["lr"] = group["lr"] * lr_factor
 
     scheduler = CosineAnnealingLR(optimizer, T_max=max_steps,
-                                  eta_min=eta_min, last_epoch=start_step)
+                                  eta_min=eta_min, last_epoch=start_step - 1)
+    # Step a start_step per allineare
+    scheduler.step()
     return scheduler
 
 
