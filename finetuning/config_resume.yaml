@@ -24,7 +24,7 @@ val_samples: 500
 max_steps: 30000
 start_step: 10000
 baseline_ppl: 12.67
-per_device_batch_size: 16
+per_device_batch_size: 32
 gradient_accumulation_steps: 1
 warmup_steps: 100       # già completato, non ha effetto dopo 10k step
 
