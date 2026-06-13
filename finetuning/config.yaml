@@ -40,7 +40,7 @@ val_every: 500
 save_every: 2000  # ogni checkpoint ~17 GB, con 100 GB disco teniamo solo ultimi 2
 
 # Early stopping
-early_stop_ppl: 15.0        # se PPL val > soglia, ferma training
+early_stop_ppl: 9999        # disabilitato per training fresco (riattivare a PPL < 50)
 max_perplexity_gap: 10.0   # legacy: gap PPL rispetto baseline
 
 # Weights & Biases
