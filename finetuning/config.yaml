@@ -22,8 +22,8 @@ val_samples: 500
 # Training
 max_steps: 10000
 baseline_ppl: 12.67       # baseline PPL di LLaMA 3.2 1B su Wikitext-2 (calcolata con baseline_ppl.py)
-per_device_batch_size: 4
-gradient_accumulation_steps: 4
+per_device_batch_size: 16
+gradient_accumulation_steps: 1
 warmup_steps: 100
 
 # Learning rates
