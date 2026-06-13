@@ -14,10 +14,13 @@ import math
 import torch
 import os
 from typing import Optional, Iterator
+from pathlib import Path
 from datasets import load_dataset, load_from_disk
 
 # Directory locale per dataset pre-scaricati (su Vast.ai: esegui prima lo script di download)
-LOCAL_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+# root del progetto: finetuning/utils/data.py → finetuning/utils/ → finetuning/ → project root
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+LOCAL_DATA_DIR = os.path.join(str(PROJECT_ROOT), "data")
 
 WIKITEST_PATH = os.path.join(LOCAL_DATA_DIR, "wikitext_test")
 C4_PATH = os.path.join(LOCAL_DATA_DIR, "c4_validation")
