@@ -93,7 +93,7 @@ def _do_train(config: dict):
     val_every = config["val_every"]
     save_every = config["save_every"]
     baseline_ppl = config["baseline_ppl"]
-    early_stop_ppl = config.get("early_stop_ppl", 9999)
+    early_stop_ppl = config.get("early_stop_ppl", 0)
     max_perplexity_gap = config.get("max_perplexity_gap", 10.0)
     checkpoint_dir = config["checkpoint_dir"]
     alpha = config.get("alpha", 0.01)
@@ -164,7 +164,7 @@ def _do_train(config: dict):
     # Data
     train_loader = make_c4_train_loader(tokenizer, seq_length=seq_length)
 
-    # Training loop — senza validazione per ora (evita crash su API metriche)
+    # Training loop
     global_step = start_step
     total_loss = 0.0
     best_val_ppl = float("inf")
@@ -218,7 +218,8 @@ def _do_train(config: dict):
                     best_val_ppl = val_ppl
                     wandb.log({"val/best_perplexity": best_val_ppl})
 
-                if val_ppl < early_stop_ppl:
+                # Early stop solo se la soglia e' > 0
+                if early_stop_ppl > 0 and val_ppl < early_stop_ppl:
                     print(f"  ✅ Early stop! PPL {val_ppl:.2f} < {early_stop_ppl}")
                     break
 
