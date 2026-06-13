@@ -50,7 +50,7 @@ def analyze_query_distribution(
     """
     # Proietta tutte le query sul piano medio
     # q_proj: [2, N] = U_mean^T @ q_all^T
-    q_proj = U_mean.T @ q_all.T  # [2, N]
+    q_proj = U_mean.T @ q_all.float().T  # [2, N]
     
     # SVD sulla matrice delle proiezioni
     # SVD non supporta BFloat16 su CUDA
