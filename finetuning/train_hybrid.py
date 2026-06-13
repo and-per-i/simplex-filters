@@ -67,17 +67,18 @@ def _resume_from_checkpoint(model, checkpoint_path: str):
 def _resume_scheduler(optimizer, start_step: int, max_steps: int, eta_min: float = 1e-7):
     """
     Riposiziona il cosine scheduler a start_step senza iterare 10000 volte.
-    """
-    progress = start_step / max_steps
-    lr_factor = 0.5 * (1 + math.cos(math.pi * progress))
 
+    PyTorch CosineAnnealingLR con last_epoch=start_step-1 + step()
+    calcola automaticamente il LR corretto per lo step start_step.
+    Non serve scaling manuale — verrebbe applicato due volte.
+    """
+    # Imposta initial_lr per ogni gruppo (richiesto da PyTorch per resume)
     for group in optimizer.param_groups:
         group.setdefault("initial_lr", group["lr"])
-        if group["lr"] > 1e-9:
-            group["lr"] = group["lr"] * lr_factor
 
     scheduler = CosineAnnealingLR(optimizer, T_max=max_steps,
                                   eta_min=eta_min, last_epoch=start_step - 1)
+    # scheduler.step() calcola il LR per start_step usando la formula del coseno
     scheduler.step()
     return scheduler
 
