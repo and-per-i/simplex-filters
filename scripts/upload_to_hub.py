@@ -2,17 +2,16 @@
 """
 upload_to_hub.py — Carica checkpoint su HuggingFace Hub.
 
+Usa upload_folder per gestire correttamente i file LFS (.safetensors).
+
 Usage:
-    python scripts/upload_to_hub.py ./trilinear/checkpoint-10000 and-per-i/simplex-trilinear-1b
-    python scripts/upload_to_hub.py ./trilinear/final and-per-i/simplex-trilinear-1b-final
-    python scripts/upload_to_hub.py --private ./checkpoint and-per-i/repo-name
+    HF_TOKEN=hf_xxx python scripts/upload_to_hub.py ./trilinear/checkpoint-10000 and-per-i/simplex-trilinear-1b
+    HF_TOKEN=hf_xxx python scripts/upload_to_hub.py --private ./trilinear/final and-per-i/simplex-trilinear-1b-final
 """
 
 import argparse
 import os
 import sys
-import glob
-import json
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -25,11 +24,10 @@ def upload_checkpoint(
     commit_message: str = "Upload checkpoint",
 ):
     """
-    Carica un checkpoint su HuggingFace Hub usando upload_large_folder
-    (preserva la struttura con model.safetensors + config.json).
+    Carica l'intera directory del checkpoint su HuggingFace Hub.
+    Usa upload_folder che gestisce correttamente LFS per i .safetensors.
     """
-    from huggingface_hub import HfApi, login
-    from safetensors.torch import load_file as safetensors_load
+    from huggingface_hub import HfApi, login, create_repo, upload_folder
 
     abs_path = os.path.abspath(checkpoint_path)
     if not os.path.exists(abs_path):
@@ -39,39 +37,27 @@ def upload_checkpoint(
     # Login
     hf_token = os.environ.get("HF_TOKEN")
     if hf_token:
-        login(token=hf_token)
+        login(token=hf_token, add_to_git_credential=True)
     else:
         print("⚠️  HF_TOKEN non impostata. Provo login da cache...")
 
-    api = HfApi()
+    # Crea repo e upload in un colpo solo
+    repo_url = create_repo(
+        repo_id=repo_name,
+        private=private,
+        exist_ok=True,
+    )
+    print(f"  ✓ Repo pronto: {repo_url}")
 
-    # Crea repo se non esiste
-    try:
-        api.create_repo(
-            repo_id=repo_name,
-            private=private,
-            exist_ok=True,
-        )
-        print(f"  ✓ Repo {repo_name} pronto")
-    except Exception as e:
-        print(f"  ⚠️  Creazione repo: {e}")
-
-    # Carica tutti i file nella directory
-    uploaded = 0
-    for fpath in sorted(glob.glob(os.path.join(abs_path, "*"))):
-        fname = os.path.basename(fpath)
-        if os.path.isfile(fpath):
-            print(f"  Uploading {fname}...", end=" ", flush=True)
-            api.upload_file(
-                path_or_fileobj=fpath,
-                path_in_repo=fname,
-                repo_id=repo_name,
-                commit_message=commit_message,
-            )
-            print("OK")
-            uploaded += 1
-
-    print(f"\n  ✅ Upload completato: {uploaded} file → {repo_name}")
+    # Upload l'intera cartella
+    print(f"\n  Uploading {abs_path} → {repo_name}...")
+    result = upload_folder(
+        repo_id=repo_name,
+        folder_path=abs_path,
+        commit_message=commit_message,
+        ignore_patterns=[".gitkeep", ".DS_Store"],
+    )
+    print(f"  ✓ Upload completato: {result}")
     return True
 
 
