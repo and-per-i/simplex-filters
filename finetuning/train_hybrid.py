@@ -29,7 +29,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.modeling.convert_to_hybrid import convert_llama_to_hybrid
 from finetuning.utils.optimizer import create_optimizer_groups
-from finetuning.utils.data import create_c4_dataloader
+from finetuning.utils.data import create_dataloader as create_c4_dataloader
 from finetuning.utils.metrics import compute_perplexity
 
 
