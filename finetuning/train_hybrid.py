@@ -29,7 +29,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.modeling.convert_to_hybrid import convert_llama_to_hybrid
 from finetuning.utils.optimizer import create_optimizer_groups
-from finetuning.utils.data import create_dataloader as create_c4_dataloader
+from finetuning.utils.data import make_c4_train_loader, make_wikitext_val_loader
 from finetuning.utils.metrics import compute_perplexity
 
 
@@ -199,33 +199,15 @@ def _do_train(config: dict):
         scheduler = CosineAnnealingLR(optimizer, T_max=max_steps, eta_min=1e-7)
 
     # DataLoader
-    dataset_name = config["dataset_name"]
-    dataset_config_name = config.get("dataset_config", None)
-
-    train_loader = create_c4_dataloader(
+    train_loader = make_c4_train_loader(
         tokenizer=tokenizer,
-        batch_size=per_device_batch_size,
         seq_length=seq_length,
-        dataset_name=dataset_name,
-        dataset_config=dataset_config_name,
-        split="train",
-        is_distributed=is_distributed,
-        world_size=world_size,
-        local_rank=local_rank,
     )
 
     # Val DataLoader
-    val_dataset_name = config.get("val_dataset", "wikitext")
-    val_dataset_config = config.get("val_dataset_config", "wikitext-2-raw-v1")
-    val_loader = create_c4_dataloader(
+    val_loader = make_wikitext_val_loader(
         tokenizer=tokenizer,
-        batch_size=per_device_batch_size,
         seq_length=seq_length,
-        dataset_name=val_dataset_name,
-        dataset_config=val_dataset_config,
-        split="test",
-        is_distributed=False,
-        streaming=True,
     )
 
     # Training loop
