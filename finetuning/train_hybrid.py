@@ -4,8 +4,7 @@ train_hybrid.py — Script principale di finetuning per modelli ibridi.
 Carica LLaMA 3.1 8B, converte layer selezionati in attenzione 2-simpliciale,
 e fa training solo dei nuovi pesi K/V su C4.
 
-Supporta resume da checkpoint: se config["resume_checkpoint"] e' impostato,
-carica i pesi e riposiziona il cosine scheduler a start_step.
+Esporta la funzione train(config) per essere chiamata da main.py.
 """
 
 import os
@@ -68,27 +67,25 @@ def _resume_from_checkpoint(model, checkpoint_path: str):
 def _resume_scheduler(optimizer, start_step: int, max_steps: int, eta_min: float = 1e-7):
     """
     Riposiziona il cosine scheduler a start_step senza iterare 10000 volte.
-    
+
     Calcola il LR iniziale dalla formula del coseno e crea uno scheduler
     con last_epoch=start_step per continuare da li'.
     """
     progress = start_step / max_steps
     lr_factor = 0.5 * (1 + math.cos(math.pi * progress))
-    
+
     # Applica il fattore al LR di ogni gruppo (salta i frozen con LR=1e-10)
     for group in optimizer.param_groups:
         if group["lr"] > 1e-9:
             group["lr"] = group["lr"] * lr_factor
-    
-    scheduler = CosineAnnealingLR(optimizer, T_max=max_steps, 
+
+    scheduler = CosineAnnealingLR(optimizer, T_max=max_steps,
                                   eta_min=eta_min, last_epoch=start_step)
     return scheduler
 
 
-def main():
-    # Config
-    config_path = os.environ.get("CONFIG_PATH", "finetuning/config.yaml")
-    config = load_config(config_path)
+def _do_train(config: dict):
+    """Esegue il training loop (logica interna, chiamata da train())."""
     model_name = config["model_name"]
     attention_type = config["attention_type"]
     simplicial_indices = config["simplicial_indices"]
@@ -112,23 +109,24 @@ def main():
     weight_decay = config["weight_decay"]
     beta1 = config.get("beta1", 0.9)
     beta2 = config.get("beta2", 0.95)
-    warmup_steps = config["warmup_steps"]
     seq_length = config["seq_length"]
     wandb_project = config.get("wandb_project", "simplex-filters")
     wandb_run_name = config.get("wandb_run_name", "llama-simplicial-finetune")
-    resume_checkpoint = config.get("resume_checkpoint", None)
+
+    # Resume: supporta sia config["resume_checkpoint"] che config["resume_path"]
+    resume_checkpoint = config.get("resume_checkpoint") or config.get("resume_path")
     start_step = config.get("start_step", 0)
-    
+
     # GPU
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     world_size = int(os.environ.get("WORLD_SIZE", 1))
     device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
     is_distributed = world_size > 1
-    
+
     if is_distributed:
         dist.init_process_group(backend="nccl")
         torch.cuda.set_device(local_rank)
-    
+
     # Wandb
     if local_rank == 0:
         wandb.init(
@@ -152,7 +150,7 @@ def main():
                 "baseline_ppl": baseline_ppl,
             }
         )
-    
+
     # Modello con pesi addestrati
     print(f"[Rank {local_rank}] Caricamento modello {model_name}...")
     model = AutoModelForCausalLM.from_pretrained(
@@ -162,7 +160,7 @@ def main():
         attn_implementation="eager",
     )
     model.train()
-    
+
     # Converti in ibrido
     model, converted = convert_llama_to_hybrid(
         model,
@@ -172,15 +170,15 @@ def main():
         attention_type=attention_type,
         gram_window=gram_window,
     )
-    
+
     # Resume da checkpoint (dopo la conversione, sovrascrive i pesi)
     if resume_checkpoint:
         _resume_from_checkpoint(model, resume_checkpoint)
-    
+
     # Tokenizer
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     tokenizer.pad_token = tokenizer.eos_token
-    
+
     # Optimizer e scheduler
     optimizer_groups = create_optimizer_groups(
         model,
@@ -191,19 +189,19 @@ def main():
         weight_decay=weight_decay,
         attention_type=attention_type,
     )
-    
+
     optimizer = AdamW(optimizer_groups, betas=(beta1, beta2))
-    
+
     # Crea scheduler: se start_step > 0, riposiziona senza iterare
     if start_step > 0:
         scheduler = _resume_scheduler(optimizer, start_step, max_steps)
     else:
         scheduler = CosineAnnealingLR(optimizer, T_max=max_steps, eta_min=1e-7)
-    
+
     # DataLoader
     dataset_name = config["dataset_name"]
     dataset_config_name = config.get("dataset_config", None)
-    
+
     train_loader = create_c4_dataloader(
         tokenizer=tokenizer,
         batch_size=per_device_batch_size,
@@ -215,7 +213,7 @@ def main():
         world_size=world_size,
         local_rank=local_rank,
     )
-    
+
     # Val DataLoader
     val_dataset_name = config.get("val_dataset", "wikitext")
     val_dataset_config = config.get("val_dataset_config", "wikitext-2-raw-v1")
@@ -229,63 +227,62 @@ def main():
         is_distributed=False,
         streaming=True,
     )
-    
+
     # Training loop
     scaler = torch.amp.GradScaler("cuda")
     global_step = start_step
     total_loss = 0.0
     best_val_ppl = float("inf")
     start_time = time.time()
-    
+
     print(f"[Rank {local_rank}] Inizio training: {max_steps} step (da step {start_step}), "
           f"batch={per_device_batch_size}, accum={gradient_accumulation_steps}")
-    
+
     optimizer.zero_grad()
-    
+
     for batch_idx, batch in enumerate(train_loader):
         if global_step >= max_steps:
             break
-        
+
         input_ids = batch["input_ids"].to(device)
         labels = batch["labels"].to(device)
-        
+
         with torch.amp.autocast("cuda", dtype=torch.bfloat16):
             outputs = model(input_ids=input_ids, labels=labels)
             loss = outputs.loss / gradient_accumulation_steps
-        
+
         scaler.scale(loss).backward()
-        
+
         if (batch_idx + 1) % gradient_accumulation_steps == 0:
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad()
             scheduler.step()
             global_step += 1
-            
+
             total_loss += loss.item() * gradient_accumulation_steps
-            
+
             if global_step % log_every == 0 and local_rank == 0:
                 avg_loss = total_loss / log_every
                 elapsed = time.time() - start_time
                 current_lr = scheduler.get_last_lr()[0] if scheduler else 0.0
                 print(f"Step {global_step}/{max_steps} | Loss: {avg_loss:.4f} | "
                       f"LR: {current_lr:.2e} | Time: {elapsed:.1f}s")
-                
+
                 wandb.log({
                     "train/loss": avg_loss,
                     "train/lr": current_lr,
                     "train/step": global_step,
                     "train/time": elapsed,
                 })
-                
+
                 total_loss = 0.0
-            
+
             # Validazione
             if global_step % val_every == 0 and local_rank == 0:
                 val_ppl = compute_perplexity(model, val_loader, tokenizer, device)
                 print(f"  Val PPL: {val_ppl:.2f} (baseline={baseline_ppl})")
-                
-                # Calcola il gap PPL
+
                 ppl_gap = val_ppl - baseline_ppl
                 wandb.log({
                     "val/perplexity": val_ppl,
@@ -293,28 +290,27 @@ def main():
                     "val/step": global_step,
                     "val/gate_passed": 1.0 if ppl_gap < max_perplexity_gap else 0.0,
                 })
-                
+
                 if val_ppl < best_val_ppl:
                     best_val_ppl = val_ppl
                     wandb.log({"val/best_perplexity": best_val_ppl})
-                
-                # Early stopping se PPL scende sotto la soglia
+
                 if val_ppl < early_stop_ppl:
                     print(f"  ✅ Early stop! PPL {val_ppl:.2f} < {early_stop_ppl}")
                     break
-            
+
             # Salvataggio checkpoint
             if global_step % save_every == 0 and local_rank == 0:
                 ckpt_path = os.path.join(checkpoint_dir, f"checkpoint-{global_step}")
                 os.makedirs(ckpt_path, exist_ok=True)
-                
+
                 state_dict = {}
                 for name, param in model.named_parameters():
                     if param.requires_grad or any(f"layers.{i}." in name for i in simplicial_indices):
                         state_dict[name] = param.detach().cpu()
-                
+
                 safetensors_save(state_dict, os.path.join(ckpt_path, "model.safetensors"))
-                
+
                 with open(os.path.join(ckpt_path, "config.json"), "w") as f:
                     json.dump({
                         "step": global_step,
@@ -325,17 +321,29 @@ def main():
                         "w1": w1, "w2": w2,
                         "gram_window": gram_window,
                     }, f)
-                
+
                 print(f"  Checkpoint salvato: {ckpt_path}")
-    
+
     if local_rank == 0:
         total_time = time.time() - start_time
         print(f"\nTraining completato in {total_time:.1f}s ({total_time/60:.1f}m)")
         print(f"Best Val PPL: {best_val_ppl:.2f}, Baseline: {baseline_ppl}")
         wandb.finish()
-    
+
     if is_distributed:
         dist.destroy_process_group()
+
+
+def train(config: dict):
+    """Funzione pubblica chiamata da main.py e da altri script."""
+    _do_train(config)
+
+
+def main():
+    """Entry point per esecuzione diretta (python -m finetuning.train_hybrid)."""
+    config_path = os.environ.get("CONFIG_PATH", "finetuning/config.yaml")
+    config = load_config(config_path)
+    _do_train(config)
 
 
 if __name__ == "__main__":

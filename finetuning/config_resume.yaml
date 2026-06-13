@@ -1,0 +1,54 @@
+# ==========================================================================
+# Configurazione RESUME: training 10k → 30k con cosine continuo
+# Copia di config.yaml con max_steps, start_step, resume_checkpoint
+# ==========================================================================
+
+# Modello
+model_name: "meta-llama/Llama-3.2-1B"
+attention_type: "simplicial"
+simplicial_indices: [8, 10, 12, 14]
+alpha: 0.01
+w1: 32
+w2: 256
+gram_window: 2
+
+# Dataset
+dataset_name: "allenai/c4"
+dataset_config: "en"
+seq_length: 512
+val_dataset: "wikitext"
+val_dataset_config: "wikitext-2-raw-v1"
+val_samples: 500
+
+# Training — 30k totali, ripresa da 10k
+max_steps: 30000
+start_step: 10000
+baseline_ppl: 12.67
+per_device_batch_size: 16
+gradient_accumulation_steps: 1
+warmup_steps: 100       # già completato, non ha effetto dopo 10k step
+
+# Learning rates (invariati)
+lr_k2v2: 5.0e-4
+lr_k1v1: 2.0e-5
+lr_standard: 5e-6
+weight_decay: 0.01
+beta1: 0.9
+beta2: 0.95
+
+# Resume checkpoint
+resume_checkpoint: "./trilinear/checkpoint-10000"
+
+# Monitoring
+log_every: 10
+val_every: 500
+save_every: 2000
+early_stop_ppl: 9999
+max_perplexity_gap: 10.0
+
+# Weights & Biases
+wandb_project: "simplex-filters"
+wandb_run_name: "llama-1b-simplicial-30k"
+
+# Checkpoint (stessa directory)
+checkpoint_dir: "./trilinear"
