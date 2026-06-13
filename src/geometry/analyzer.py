@@ -189,8 +189,17 @@ def analyze_checkpoint(
     tokenizer = AutoTokenizer.from_pretrained(base_model_path)
     tokenizer.pad_token = tokenizer.eos_token
     
-    # Dataset di analisi
-    dataset = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
+    # Dataset di analisi (da disco locale se disponibile, per bypassare proxy Vast)
+    wikitext_local = os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "data", "wikitext_test")
+    if os.path.exists(wikitext_local):
+        if verbose:
+            print(f"  Dataset di analisi da disco: {wikitext_local}")
+        from datasets import load_from_disk
+        dataset = load_from_disk(wikitext_local)
+    else:
+        if verbose:
+            print(f"  Dataset di analisi da HF: Salesforce/wikitext")
+        dataset = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
     
     results = {}
     
