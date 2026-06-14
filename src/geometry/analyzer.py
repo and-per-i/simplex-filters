@@ -8,7 +8,7 @@ import torch
 from typing import Dict, List, Optional
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from src.geometry.hooks import ActivationSaver, batch_to_planes, batch_to_planes_gram_det
+from src.geometry.hooks import ActivationSaver, batch_to_planes, batch_to_planes_gram_det, batch_to_planes_llama_pure
 from src.geometry.grassmann import (
     frechet_mean_planes,
     geodesic_variance,
@@ -364,6 +364,8 @@ def analyze_llama_pure(
     seq_length: int = 256,
     device: str = "cuda",
     verbose: bool = True,
+    dataset_name: str = "wikitext",
+    do_shuffle_test: bool = True,
 ) -> Dict:
     """
     Analisi geometrica di LLaMA puro (nessuna conversione).
@@ -379,6 +381,8 @@ def analyze_llama_pure(
         seq_length: lunghezza sequenza
         device: device
         verbose: verbosità
+        dataset_name: "wikitext" (default) o "c4" (cross-dataset robustness test)
+        do_shuffle_test: se True, calcola anche varianza su K rimescolati
         
     Returns:
         dict con risultati per ogni layer
@@ -386,6 +390,31 @@ def analyze_llama_pure(
     from datasets import load_dataset
     import os
     from src.geometry.hooks import ActivationSaver, batch_to_planes_llama_pure
+    
+    # Test 1: cross-dataset robustness
+    if dataset_name == "c4":
+        c4_local = "./data/c4_train"
+        if os.path.exists(c4_local):
+            if verbose:
+                print(f"  Dataset C4 da disco: {c4_local}")
+            from datasets import load_from_disk
+            ds = load_from_disk(c4_local)
+        else:
+            if verbose:
+                print(f"  Dataset C4 da HF (streaming)")
+            ds = load_dataset("allenai/c4", "en", split="train", streaming=True)
+    else:
+        # Dataset Wikitext (come prima)
+        wikitext_local = "./data/wikitext_test"
+        if os.path.exists(wikitext_local):
+            if verbose:
+                print(f"  Dataset di analisi da disco: {wikitext_local}")
+            from datasets import load_from_disk
+            ds = load_from_disk(wikitext_local)
+        else:
+            if verbose:
+                print(f"  Dataset di analisi da HF: Salesforce/wikitext")
+            ds = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
     
     model_device_map = None if device == "cpu" else device
     
@@ -425,18 +454,6 @@ def analyze_llama_pure(
             tokenizer.pad_token_id = tokenizer.convert_tokens_to_ids("<|endoftext|>")
     
     # Dataset: carica tutti i testi non vuoti in una lista (una volta sola)
-    wikitext_local = "./data/wikitext_test"
-    if os.path.exists(wikitext_local):
-        if verbose:
-            print(f"  Dataset di analisi da disco: {wikitext_local}")
-        from datasets import load_from_disk
-        ds = load_from_disk(wikitext_local)
-    else:
-        if verbose:
-            print(f"  Dataset di analisi da HF: Salesforce/wikitext")
-        ds = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
-    
-    # Converte in lista di testi non vuoti (evita iteratore che si resetta)
     all_texts = []
     for example in ds:
         t = example.get("text", "")
