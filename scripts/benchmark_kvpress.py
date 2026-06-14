@@ -44,10 +44,10 @@ NUM_SEQUENCES = 10
 BUDGETS = [1.0, 0.5, 0.3, 0.1]
 
 
-def compute_U_mean_llama(gramdet_mode=False):
+def compute_U_mean_llama(gramdet_mode=False, gram_window=8):
     """Calcola U_mean su LLaMA puro o su GramDet (se gramdet_mode)."""
     if gramdet_mode:
-        print("Calcolo U_mean su modello GramDet step 0...")
+        print(f"Calcolo U_mean su modello GramDet step 0 (W={gram_window})...")
         # Carica e converti
         model = AutoModelForCausalLM.from_pretrained(
             MODEL, torch_dtype=DTYPE, device_map=DEVICE,
@@ -56,7 +56,7 @@ def compute_U_mean_llama(gramdet_mode=False):
         from src.modeling.convert_to_hybrid import convert_llama_to_hybrid
         model, _ = convert_llama_to_hybrid(
             model, simplicial_indices=INDICES,
-            attention_type="gram_det", gram_window=8,
+            attention_type="gram_det", gram_window=gram_window,
         )
         model.eval()
 
@@ -136,7 +136,7 @@ def compute_U_mean_llama(gramdet_mode=False):
     return U_mean
 
 
-def get_model_and_tokenizer(gramdet_mode=False):
+def get_model_and_tokenizer(gramdet_mode=False, gram_window=8):
     """Carica LLaMA standard, opzionalmente convertito in GramDet."""
     print(f"Caricamento {MODEL}...")
     model = AutoModelForCausalLM.from_pretrained(
@@ -145,10 +145,10 @@ def get_model_and_tokenizer(gramdet_mode=False):
     )
     if gramdet_mode:
         from src.modeling.convert_to_hybrid import convert_llama_to_hybrid
-        print("  Conversione in GramDet ibrido...")
+        print(f"  Conversione in GramDet ibrido (W={gram_window})...")
         model, _ = convert_llama_to_hybrid(
             model, simplicial_indices=INDICES,
-            attention_type="gram_det", gram_window=8,
+            attention_type="gram_det", gram_window=gram_window,
         )
     model.eval()
     tokenizer = AutoTokenizer.from_pretrained(MODEL)
@@ -176,7 +176,7 @@ def clear_eviction_params(model):
             attn.eviction_params = None
 
 
-def run_benchmark(gramdet_mode=False):
+def run_benchmark(gramdet_mode=False, gram_window=8):
     # Prepara dati
     _, tokenizer = get_model_and_tokenizer()
     
@@ -204,8 +204,8 @@ def run_benchmark(gramdet_mode=False):
     torch.cuda.empty_cache()
     
     # Carica U_mean e modello
-    U_mean = compute_U_mean_llama(gramdet_mode)
-    model, tokenizer = get_model_and_tokenizer(gramdet_mode)
+    U_mean = compute_U_mean_llama(gramdet_mode, gram_window)
+    model, tokenizer = get_model_and_tokenizer(gramdet_mode, gram_window)
     
     sequences = []
     for i in range(NUM_SEQUENCES):
@@ -332,5 +332,6 @@ def run_benchmark(gramdet_mode=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Benchmark KV eviction con kvpress")
     parser.add_argument("--gramdet", action="store_true", help="Usa modello GramDet ibrido (step 0)")
+    parser.add_argument("--gram-window", type=int, default=8, help="Half-window per GramDet (default: 8)")
     args = parser.parse_args()
-    run_benchmark(gramdet_mode=args.gramdet)
+    run_benchmark(gramdet_mode=args.gramdet, gram_window=args.gram_window)
