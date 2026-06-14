@@ -195,12 +195,19 @@ class GramDetAttention(nn.Module):
                             mask[b, h, n_, top_ids] = 1.0
                 k_windows = k_windows * mask
                 v_windows = v_windows * mask
-            else:
+            elif strategy == "random":
                 # random eviction: stessa maschera per tutte le posizioni
                 max_survive = max(1, int(win_size * budget))
                 rand_ids = torch.randperm(win_size, device=x.device)[:max_survive]
                 mask = torch.zeros(win_size, 1, device=x.device)
                 mask[rand_ids] = 1.0
+                k_windows = k_windows * mask.reshape(1, 1, 1, -1, 1)
+                v_windows = v_windows * mask.reshape(1, 1, 1, -1, 1)
+            elif strategy == "fifo":
+                # FIFO: tieni le prime B% chiavi (le piu' recenti nella finestra)
+                max_survive = max(1, int(win_size * budget))
+                mask = torch.zeros(win_size, 1, device=x.device)
+                mask[-max_survive:] = 1.0  # ultime = piu' recenti
                 k_windows = k_windows * mask.reshape(1, 1, 1, -1, 1)
                 v_windows = v_windows * mask.reshape(1, 1, 1, -1, 1)
 

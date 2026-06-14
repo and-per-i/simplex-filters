@@ -141,6 +141,45 @@ def eval_ppl(model, tokenizer, U_mean, budget, strategy, dataset):
     return math.exp(avg_loss)
 
 
+def eval_ppl_fifo(model, tokenizer, budget, dataset):
+    """Calcola PPL con FIFO eviction (tiene prime B chiavi, elimina ultime)."""
+    total_loss = 0.0
+    total_tokens = 0
+    count = 0
+    
+    for idx in INDICES:
+        attn = model.model.layers[idx].self_attn
+        if hasattr(attn, "eviction_params"):
+            attn.eviction_params = {
+                "budget": budget,
+                "strategy": "fifo",
+            }
+    
+    for example in dataset:
+        if count >= NUM_BATCHES:
+            break
+        text = example.get("text", "")
+        if not text.strip():
+            continue
+        tokens = tokenizer.encode(text, add_special_tokens=False, truncation=True, max_length=SEQ_LEN)
+        if len(tokens) < SEQ_LEN + 1:
+            continue
+        input_ids = torch.tensor(tokens[:SEQ_LEN], dtype=torch.long, device=DEVICE).unsqueeze(0)
+        outputs = model(input_ids, labels=input_ids)
+        loss = outputs.loss.item()
+        total_loss += loss * (SEQ_LEN - 1)
+        total_tokens += (SEQ_LEN - 1)
+        count += 1
+    
+    for idx in INDICES:
+        attn = model.model.layers[idx].self_attn
+        if hasattr(attn, "eviction_params"):
+            attn.eviction_params = None
+    
+    avg_loss = total_loss / max(total_tokens, 1)
+    return math.exp(avg_loss)
+
+
 def main():
     print(f"Benchmark GramDet step 0 su {MODEL}, device={DEVICE}")
     
@@ -170,14 +209,17 @@ def main():
         dataset = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
     
     # 4. Benchmark
-    print(f"\n{'Budget':>8} {'Q-filter':>12} {'Random':>12} {'Delta':>12}")
+    print(f"\n{'Budget':>8} {'Q-filter':>12} {'Random':>12} {'FIFO':>12}")
     print("-" * 48)
     
     for budget in BUDGETS:
         ppl_qf = eval_ppl(model, tokenizer, U_mean, budget, "qfilter", dataset)
         ppl_rand = eval_ppl(model, tokenizer, U_mean, budget, "random", dataset)
-        delta = ppl_qf - ppl_rand
-        print(f"{budget*100:>6.0f}% {ppl_qf:>12.2f} {ppl_rand:>12.2f} {delta:>+12.2f}")
+        ppl_fifo = eval_ppl_fifo(model, tokenizer, budget, dataset)
+        qf_delta = ppl_qf - ppl_rand
+        fifo_delta = ppl_fifo - ppl_rand
+        print(f"{budget*100:>6.0f}% {ppl_qf:>12.2f} {ppl_rand:>12.2f} {ppl_fifo:>12.2f}")
+        print(f"{'':>8} {'QF-R:':>12} {qf_delta:>+12.2f} {'FIFO-R:':>12} {fifo_delta:>+12.2f}")
 
 
 if __name__ == "__main__":
