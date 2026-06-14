@@ -82,6 +82,9 @@ def qfilter_score_orthogonal(
     Returns:
         scores: [N] score per ogni chiave
     """
+    # Allinea il dtype di U_mean a quello delle chiavi (es. bfloat16 vs float32)
+    U_mean = U_mean.to(k.dtype)
+    
     # Proiettore sul piano medio
     P = U_mean @ U_mean.T  # [d, d]
     # Componente sul piano: k_proj = k @ P
