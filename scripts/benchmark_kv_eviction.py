@@ -138,33 +138,47 @@ def apply_eviction_to_past(past_key_values, U_mean, budget, strategy):
 
 
 def run_benchmark():
-    U_mean = compute_U_mean_llama()
-    model, tokenizer = get_model_and_tokenizer()
+    # Prima carica tokenizer (serve per concatenare i testi)
+    _, tokenizer = get_model_and_tokenizer()
     
-    # Carica Wikitext
+    # Carica Wikitext e concatena in token stream
     wikitext_local = "./data/wikitext_test"
     if os.path.exists(wikitext_local):
         from datasets import load_from_disk
-        dataset = load_from_disk(wikitext_local)
+        ds = load_from_disk(wikitext_local)
     else:
-        dataset = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
+        ds = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
     
-    # Prepara sequenze di 512 token
-    all_texts = []
-    for example in dataset:
+    all_tokens = []
+    for example in ds:
         t = example.get("text", "")
-        if t.strip():
-            all_texts.append(t)
-        if len(all_texts) >= 100:
+        if not t.strip():
+            continue
+        tokens = tokenizer.encode(t, add_special_tokens=False)
+        if len(tokens) < 2:
+            continue
+        all_tokens.extend(tokens)
+        if len(all_tokens) >= (NUM_SEQUENCES + 1) * SEQ_LEN:
             break
+    
+    # Pulisci memoria prima di caricare modello
+    del tokenizer
+    gc.collect()
+    torch.cuda.empty_cache()
+    
+    # Ora carica modello e U_mean
+    U_mean = compute_U_mean_llama()
+    model, tokenizer = get_model_and_tokenizer()
     
     sequences = []
-    for text in all_texts:
-        tokens = tokenizer.encode(text, add_special_tokens=False, truncation=True, max_length=SEQ_LEN)
-        if len(tokens) == SEQ_LEN:
-            sequences.append(torch.tensor(tokens, dtype=torch.long))
-        if len(sequences) >= NUM_SEQUENCES:
-            break
+    for i in range(NUM_SEQUENCES):
+        chunk = all_tokens[i * SEQ_LEN : (i + 1) * SEQ_LEN]
+        if len(chunk) == SEQ_LEN:
+            sequences.append(torch.tensor(chunk, dtype=torch.long))
+        else:
+            # Padding con zeros
+            chunk = chunk + [0] * (SEQ_LEN - len(chunk))
+            sequences.append(torch.tensor(chunk[:SEQ_LEN], dtype=torch.long))
     
     print(f"Sequenze da {SEQ_LEN} token: {len(sequences)}")
     
@@ -213,11 +227,17 @@ def run_benchmark():
         
         # Stampa riga
         qf_avg = sum(results[budget]["qfilter"]) / len(results[budget]["qfilter"])
-        ra_avg = sum(results[budget]["random"]) / len(results[budget]["random"])
-        fi_avg = sum(results[budget]["fifo"]) / len(results[budget]["fifo"])
         qf_ppl = math.exp(qf_avg)
-        ra_ppl = math.exp(ra_avg)
-        fi_ppl = math.exp(fi_avg)
+        if len(results[budget]["random"]) > 0:
+            ra_avg = sum(results[budget]["random"]) / len(results[budget]["random"])
+            ra_ppl = math.exp(ra_avg)
+        else:
+            ra_ppl = 0.0
+        if len(results[budget]["fifo"]) > 0:
+            fi_avg = sum(results[budget]["fifo"]) / len(results[budget]["fifo"])
+            fi_ppl = math.exp(fi_avg)
+        else:
+            fi_ppl = 0.0
         print(f"{budget*100:>6.0f}% {qf_ppl:>12.2f} {ra_ppl:>12.2f} {fi_ppl:>12.2f}")
 
 
