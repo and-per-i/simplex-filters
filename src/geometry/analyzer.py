@@ -393,12 +393,28 @@ def analyze_llama_pure(
     
     # Test 1: cross-dataset robustness
     if dataset_name == "c4":
-        c4_local = "./data/c4_train"
-        if os.path.exists(c4_local):
+        # Prova più path per C4 (su Vast può essere in posizioni diverse)
+        c4_candidates = [
+            "./data/c4_train",
+            "./finetuning/data/c4_train",
+            "/workspace/simplex-filters/data/c4_train",
+            "/workspace/simplex-filters/finetuning/data/c4_train",
+        ]
+        c4_local = None
+        for path in c4_candidates:
+            if os.path.exists(path):
+                c4_local = path
+                break
+        if c4_local is not None:
             if verbose:
                 print(f"  Dataset C4 da disco: {c4_local}")
             from datasets import load_from_disk
-            ds = load_from_disk(c4_local)
+            try:
+                ds = load_from_disk(c4_local)
+            except Exception as e:
+                if verbose:
+                    print(f"  [WARN] Caricamento C4 da disco fallito ({e}), provo HF streaming")
+                ds = load_dataset("allenai/c4", "en", split="train", streaming=True)
         else:
             if verbose:
                 print(f"  Dataset C4 da HF (streaming)")
