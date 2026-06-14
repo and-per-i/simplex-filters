@@ -206,8 +206,27 @@ def run_benchmark():
                 past = outputs.past_key_values
                 
                 # DynamicCache → tuple of tuple per compatibilità
-                if hasattr(past, 'key_cache'):
-                    past = tuple(zip(past.key_cache, past.value_cache))
+                past_type_name = type(past).__name__
+                if past_type_name == 'DynamicCache':
+                    # DynamicCache: prova tutti i pattern di accesso noti
+                    try:
+                        # Pattern 1: key_cache/ value_cache come proprietà o attributi
+                        past = tuple(zip(past.key_cache, past.value_cache))
+                    except (AttributeError, TypeError):
+                        try:
+                            # Pattern 2: to_legacy_cache()
+                            past = past.to_legacy_cache()
+                        except (AttributeError, TypeError):
+                            try:
+                                # Pattern 3: attributi privati _key_cache / _value_cache
+                                past = tuple(zip(past._key_cache, past._value_cache))
+                            except (AttributeError, TypeError):
+                                # Pattern 4: iterazione con range(len())
+                                try:
+                                    past = tuple((past._key_cache[i], past._value_cache[i]) for i in range(len(past)))
+                                except:
+                                    print(f"ERROR: impossibile convertire {past_type_name}, attributi: {[a for a in dir(past) if not a.startswith('__')]}")
+                                    raise
                 elif hasattr(past, 'to_legacy_cache'):
                     past = past.to_legacy_cache()
                 
