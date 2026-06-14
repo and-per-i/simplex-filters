@@ -319,6 +319,7 @@ def batch_to_planes_llama_pure(
     Returns:
         U_list: basi ortonormali [num_pairs, d, 2]
         Q_vectors: vettori query corrispondenti [num_pairs, d]
+        K_vectors: vettori K raw [N, d] (per shuffle test)
     """
     from src.geometry.plane import plane_projector_and_basis
     
@@ -345,4 +346,4 @@ def batch_to_planes_llama_pure(
         U_list[p] = U
         q_sampled[p] = Q[j1]
     
-    return U_list, q_sampled
+    return U_list, q_sampled, K

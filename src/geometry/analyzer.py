@@ -472,6 +472,7 @@ def analyze_llama_pure(
         
         all_U = []
         all_q = []
+        all_K = []  # per shuffle test
         
         for batch_idx in range(num_analysis_batches):
             # Prendi fino a 2 testi non vuoti (avanzando il cursore)
@@ -494,11 +495,12 @@ def analyze_llama_pure(
             activations = saver.get_data()
             saver.remove_hooks()
             
-            U_list, q_vectors = batch_to_planes_llama_pure(
+            U_list, q_vectors, K_raw = batch_to_planes_llama_pure(
                 activations, layer_idx, num_heads, head_dim, kv_heads, device, num_pairs=500,
             )
             all_U.append(U_list)
             all_q.append(q_vectors)
+            all_K.append(K_raw)
         
         if not all_U:
             continue
@@ -518,11 +520,39 @@ def analyze_llama_pure(
         
         angle_fp_deg = angle_from_plane.item() * 180 / 3.14159
         
+        # ================================================================
+        # TEST 2: Baseline rimescolata (shuffle K vectors)
+        # ================================================================
+        K_all = torch.cat(all_K, dim=0)  # [N_total, head_dim]
+        N_total = K_all.shape[0]
+        actual_pairs = min(500, N_total, N_total * (N_total - 1) // 2)
+        
+        # Shuffle: permutazione casuale dei K
+        shuffle_idx = torch.randperm(N_total, device=device)
+        K_shuffled = K_all[shuffle_idx]
+        
+        # Ricostruisce piani dalle coppie rimescolate
+        from src.geometry.plane import plane_projector_and_basis
+        idx1 = shuffle_idx[:actual_pairs]
+        idx2 = shuffle_idx[(torch.arange(actual_pairs, device=device) + actual_pairs // 2) % actual_pairs]
+        
+        U_shuffled = torch.zeros(actual_pairs, head_dim, 2, device=device)
+        for p in range(actual_pairs):
+            j1, j2 = idx1[p].item(), idx2[p].item()
+            if j1 == j2:
+                j2 = (j2 + 1) % N_total
+            _, U, _ = plane_projector_and_basis(K_shuffled[j1], K_shuffled[j2])
+            U_shuffled[p] = U
+        
+        U_shuffled_mean, _ = frechet_mean_planes(U_shuffled, n_iter=10, verbose=False)
+        var_shuffled, _ = geodesic_variance(U_shuffled, U_shuffled_mean)
+        
         results[layer_idx] = {
             "num_vectors": N,
             "U_mean": U_mean.cpu(),
             "P_mean": P_mean.cpu(),
             "geodesic_variance": var_g.item(),
+            "geodesic_variance_shuffled": var_shuffled.item(),
             "geodesic_distances": distances.cpu(),
             "q_mean": q_mean.cpu(),
             "query_plane_proj_norm": proj_norm.item(),
@@ -539,13 +569,15 @@ def analyze_llama_pure(
             results[layer_idx]["reduction_pct"] = round(reduction_pct, 1)
         
         if verbose:
-            print(f"    Varianza geodesica:  {var_g.item():.6f}")
+            print(f"    Varianza geodesica:          {var_g.item():.6f}")
+            print(f"    Varianza shuffled:            {var_shuffled.item():.6f}")
+            print(f"    Shuffle/original ratio:       {var_shuffled.item() / var_g.item():.2f}×")
             if baseline:
-                print(f"    Baseline random:     {baseline:.4f} (Gr(2,{head_dim}))")
-                print(f"    Riduzione vs random: {reduction_pct:.1f}%")
-            print(f"    ||P q̄||:            {proj_norm.item():.6f}")
-            print(f"    q̄ dal piano:         {angle_fp_deg:.1f}°")
-            print(f"    σ1/σ2 (anisotropia): {query_dist['query_anisotropy_ratio']:.2f}")
+                print(f"    Baseline random:             {baseline:.4f} (Gr(2,{head_dim}))")
+                print(f"    Riduzione vs random:         {reduction_pct:.1f}%")
+            print(f"    ||P q̄||:                    {proj_norm.item():.6f}")
+            print(f"    q̄ dal piano:                 {angle_fp_deg:.1f}°")
+            print(f"    σ1/σ2 (anisotropia):          {query_dist['query_anisotropy_ratio']:.2f}")
     
     return results
 
@@ -558,9 +590,12 @@ def summarize_results(results: Dict):
     
     for layer_idx, metrics in sorted(results.items()):
         angle_fp = metrics.get('query_angle_from_plane_deg', 'N/A')
+        var_sh = metrics.get('geodesic_variance_shuffled')
         print(f"\n  Layer {layer_idx}:")
         print(f"    Vettori:              {metrics['num_vectors']}")
         print(f"    Varianza geodesica:   {metrics['geodesic_variance']:.6f}")
+        if var_sh is not None:
+            print(f"    Varianza shuffled:    {var_sh:.6f} (ratio: {var_sh/metrics['geodesic_variance']:.2f}×)")
         print(f"    ||P q̄||:              {metrics['query_plane_proj_norm']:.6f}")
         print(f"    q̄ dal piano:          {angle_fp}° (90° = ⟂ piano → volume max)")
         print(f"    σ1/σ2 (anisotropia):  {metrics.get('query_anisotropy_ratio', 'N/A')}")
