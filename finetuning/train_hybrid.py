@@ -254,7 +254,10 @@ def train(config: dict):
 
 
 def main():
-    config_path = os.environ.get("CONFIG_PATH", "finetuning/config.yaml")
+    parser = argparse.ArgumentParser(description="Finetuning modello ibrido simplex-filters")
+    parser.add_argument("--config", type=str, default=None, help="Percorso config YAML (default: env CONFIG_PATH o finetuning/config.yaml)")
+    args = parser.parse_args()
+    config_path = args.config or os.environ.get("CONFIG_PATH", "finetuning/config.yaml")
     _do_train(load_config(config_path))
 
 
