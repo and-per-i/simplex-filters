@@ -20,6 +20,9 @@ tqdm>=4.66.0
 # Test
 pytest>=8.0.0
 
+# KV cache eviction (NVIDIA)
+kvpress>=0.1.0
+
 # Utilità (già parte di Python stdlib o installate con torch)
 # - math, os, sys, argparse, subprocess, typing, dataclasses, yaml
 # - numpy (via torch)scipy>=1.10.0
