@@ -206,7 +206,6 @@ def run_benchmark():
                 past = outputs.past_key_values
                 
                 # DynamicCache → tuple of tuple per compatibilità
-                past = outputs.past_key_values
                 if hasattr(past, 'to_legacy_cache'):
                     past = past.to_legacy_cache()
                 
