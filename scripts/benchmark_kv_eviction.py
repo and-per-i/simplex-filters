@@ -206,7 +206,9 @@ def run_benchmark():
                 past = outputs.past_key_values
                 
                 # DynamicCache → tuple of tuple per compatibilità
-                if hasattr(past, 'to_legacy_cache'):
+                if hasattr(past, 'key_cache'):
+                    past = tuple(zip(past.key_cache, past.value_cache))
+                elif hasattr(past, 'to_legacy_cache'):
                     past = past.to_legacy_cache()
                 
                 for strategy in ["qfilter", "random", "fifo"]:
