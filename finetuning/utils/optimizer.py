@@ -80,8 +80,13 @@ def create_optimizer_groups(
         in_simplicial = any(f"layers.{idx}." in name for idx in simplicial_indices)
 
         if not in_simplicial:
-            # g) Layer non-simpliciale → standard (include FFN, norm, ecc.)
-            standard_params.append(param)
+            # g) Layer non-simpliciale → standard
+            # Se lr_standard == 0, congela completamente (niente gradienti)
+            if lr_standard == 0:
+                param.requires_grad = False
+                frozen_params.append(param)
+            else:
+                standard_params.append(param)
         elif attention_type == "gram_det":
             # GramDet: solo q/k/v/o sono trainable
             if "q_proj" in name or "k_proj" in name or "v_proj" in name or "o_proj" in name:
