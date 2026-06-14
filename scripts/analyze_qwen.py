@@ -2,14 +2,16 @@
 """
 analyze_qwen.py — Analisi geometrica di Qwen2.5-0.5B (QKV bias).
 Hardcoded: 24 layer, [9, 11, 13, 15], Gr(2,64).
+Il tokenizer Qwen non ha eos_token/pad_token di default → fix esplicito.
 """
 
 import os, sys
 import torch
+from transformers import AutoConfig, AutoTokenizer
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.geometry.analyzer import analyze_llama_pure, summarize_results
-from src.geometry.hooks import batch_to_planes_llama_pure
 
 MODEL = "Qwen/Qwen2.5-0.5B"
 INDICES = [9, 11, 13, 15]
@@ -23,6 +25,22 @@ print(f"Device: {DEVICE}")
 
 torch.set_num_threads(8)
 
+# Fix esplicito tokenizer Qwen: non ha eos_token/pad_token
+tokenizer = AutoTokenizer.from_pretrained(MODEL, trust_remote_code=True)
+print(f"  Tokenizer pad_token: {tokenizer.pad_token}, eos_token: {tokenizer.eos_token}")
+
+# Qwen2.5 non ha pad_token né eos_token → settiamo manualmente
+if tokenizer.pad_token is None:
+    tokenizer.pad_token = "<|endoftext|>"
+    tokenizer.eos_token = "<|endoftext|>"
+
+# Debug: testa un testo di Wikitext
+test_text = "Beginners BBQ Class Taking Place in Missoula! Do you want to get better"
+tokens = tokenizer.encode(test_text)
+print(f"  Test tokenizzazione: '{test_text[:40]}...' → {len(tokens)} token")
+if len(tokens) > 0:
+    print(f"  Primi 3 token: {tokens[:3]} → {tokenizer.decode(tokens[:3])}")
+
 try:
     results = analyze_llama_pure(
         model_name=MODEL,
@@ -34,7 +52,6 @@ try:
     )
     summarize_results(results)
     
-    # Print summary line
     print("\nRIEPILOGO COMPATTO:")
     print(f"{'Layer':>6} | {'Varianza':>10} | {'Riduzione':>10} | {'Angolo':>7}")
     print("-" * 42)
