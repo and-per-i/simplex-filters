@@ -1,26 +1,17 @@
 #!/usr/bin/env python3
 """
-analyze_olmo.py — Analisi geometrica di OLMo-1B (QK-norm).
+analyze_olmo.py — Analisi geometrica di OLMo 1B (QK-norm).
+Usa la versione HF-native OLMo-1B-0724-hf (non richiede hf_olmo).
 Hardcoded: 16 layer, [5, 7, 9, 11], Gr(2,64).
-Richiede: pip install hf_olmo
 """
 
-import os, sys, subprocess
-
-# Prova a importare hf_olmo, se manca installalo
-try:
-    import hf_olmo
-except ImportError:
-    print("[INFO] Installazione hf_olmo...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "hf_olmo"])
-    print("[INFO] hf_olmo installato.")
-
+import os, sys
 import torch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.geometry.analyzer import analyze_llama_pure, summarize_results
 
-MODEL = "allenai/OLMo-1B"
+MODEL = "allenai/OLMo-1B-0724-hf"
 INDICES = [5, 7, 9, 11]  # ~1/4, 2/4, 3/4 dei 16 layer totali
 HEAD_DIM = 64  # 2048 hidden / 32 heads = 64
 DEVICE = "cpu"
