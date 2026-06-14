@@ -239,53 +239,76 @@ def run_benchmark(gramdet_mode=False):
             suffix = input_ids[:, PREFIX_LEN:]
             
             with torch.no_grad():
-                # === GrassmannianPress ===
-                # Su GramDet: via eviction_params (fallback A)
-                # Su LLaMA puro: via kvpress
                 if gramdet_mode:
+                    # GramDet: confronto Grassmann vs Random su STESSI layer GramDet
+                    # via eviction_params (nessun kvpress coinvolto su questi layer).
+                    
+                    # Strategia: Grassmann orthogonal score
                     set_eviction_params(model, U_mean, budget, "qfilter")
                     out = model(prefix, use_cache=True)
                     clear_eviction_params(model)
+                    out_suffix = model(suffix, past_key_values=out.past_key_values)
+                    logits = out_suffix.logits
+                    loss_fct = torch.nn.CrossEntropyLoss()
+                    shift_logits = logits[:, :-1, :].reshape(-1, logits.shape[-1])
+                    shift_labels = suffix[:, 1:].reshape(-1)
+                    loss = loss_fct(shift_logits, shift_labels)
+                    results[budget]["grassmann"].append(loss.item())
+                    
+                    # Strategia: Random eviction (stessi layer)
+                    set_eviction_params(model, U_mean, budget, "random")
+                    out = model(prefix, use_cache=True)
+                    clear_eviction_params(model)
+                    out_suffix = model(suffix, past_key_values=out.past_key_values)
+                    logits = out_suffix.logits
+                    shift_logits = logits[:, :-1, :].reshape(-1, logits.shape[-1])
+                    shift_labels = suffix[:, 1:].reshape(-1)
+                    loss = loss_fct(shift_logits, shift_labels)
+                    results[budget]["random"].append(loss.item())
+                    
+                    # QFilter non applicabile (crasha su GramDetAttention)
+                    if budget == 1.0 and seq_idx == 0:
+                        print(f"  [INFO] QFilter non disponibile per GramDet (attenzione non standard)")
                 else:
+                    # LLaMA puro: tutte le strategie via kvpress
                     press = GrassmannianPress(
                         U_mean=U_mean, compression_ratio=cr,
                     )
                     with press(model):
                         out = model(prefix, use_cache=True)
-                
-                out_suffix = model(suffix, past_key_values=out.past_key_values)
-                logits = out_suffix.logits
-                loss_fct = torch.nn.CrossEntropyLoss()
-                shift_logits = logits[:, :-1, :].reshape(-1, logits.shape[-1])
-                shift_labels = suffix[:, 1:].reshape(-1)
-                loss = loss_fct(shift_logits, shift_labels)
-                results[budget]["grassmann"].append(loss.item())
-                
-                # === QFilterPress (kvpress) ===
-                if HAVE_KVPRESS:
-                    press = QFilterPress(compression_ratio=cr)
-                    with press(model):
-                        out = model(prefix, use_cache=True)
                     out_suffix = model(suffix, past_key_values=out.past_key_values)
                     logits = out_suffix.logits
                     loss_fct = torch.nn.CrossEntropyLoss()
                     shift_logits = logits[:, :-1, :].reshape(-1, logits.shape[-1])
                     shift_labels = suffix[:, 1:].reshape(-1)
                     loss = loss_fct(shift_logits, shift_labels)
-                    results[budget]["qfilter"].append(loss.item())
-                
-                # === RandomPress (kvpress) ===
-                if HAVE_KVPRESS:
-                    press = RandomPress(compression_ratio=cr)
-                    with press(model):
-                        out = model(prefix, use_cache=True)
-                    out_suffix = model(suffix, past_key_values=out.past_key_values)
-                    logits = out_suffix.logits
-                    loss_fct = torch.nn.CrossEntropyLoss()
-                    shift_logits = logits[:, :-1, :].reshape(-1, logits.shape[-1])
-                    shift_labels = suffix[:, 1:].reshape(-1)
-                    loss = loss_fct(shift_logits, shift_labels)
-                    results[budget]["random"].append(loss.item())
+                    results[budget]["grassmann"].append(loss.item())
+                    
+                    # === QFilterPress (kvpress) ===
+                    if HAVE_KVPRESS:
+                        press = QFilterPress(compression_ratio=cr)
+                        with press(model):
+                            out = model(prefix, use_cache=True)
+                        out_suffix = model(suffix, past_key_values=out.past_key_values)
+                        logits = out_suffix.logits
+                        loss_fct = torch.nn.CrossEntropyLoss()
+                        shift_logits = logits[:, :-1, :].reshape(-1, logits.shape[-1])
+                        shift_labels = suffix[:, 1:].reshape(-1)
+                        loss = loss_fct(shift_logits, shift_labels)
+                        results[budget]["qfilter"].append(loss.item())
+                    
+                    # === RandomPress (kvpress) ===
+                    if HAVE_KVPRESS:
+                        press = RandomPress(compression_ratio=cr)
+                        with press(model):
+                            out = model(prefix, use_cache=True)
+                        out_suffix = model(suffix, past_key_values=out.past_key_values)
+                        logits = out_suffix.logits
+                        loss_fct = torch.nn.CrossEntropyLoss()
+                        shift_logits = logits[:, :-1, :].reshape(-1, logits.shape[-1])
+                        shift_labels = suffix[:, 1:].reshape(-1)
+                        loss = loss_fct(shift_logits, shift_labels)
+                        results[budget]["random"].append(loss.item())
         
         # Stampa riga
         grass_avg = sum(results[budget]["grassmann"]) / len(results[budget]["grassmann"])
