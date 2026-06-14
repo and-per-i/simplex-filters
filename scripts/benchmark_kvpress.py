@@ -2,25 +2,20 @@
 """
 benchmark_kvpress.py — Benchmark eviction KV cache con kvpress.
 
-Confronta GrassmannianPress (score ortogonale al piano medio) vs
-QFilterPress (NVIDIA) vs RandomPress su LLaMA 3.2 1B.
-
-Procedura:
-1. Carica LLaMA 3.2 1B standard
-2. Calcola U_mean (piano medio) via analyze_llama_pure
-3. Per ogni budget [0%, 50%, 70%, 90%]:
-   - Instanzia GrassmannianPress, QFilterPress, RandomPress
-   - Forward prefisso (256 token) con press attiva
-   - Forward suffisso (256 token) con KV ridotto → calcola PPL
-4. Tabella comparativa
+Supporta due modalità:
+- Normale: LLaMA puro, tutte le strategie via kvpress
+- --gramdet: LLaMA convertito in ibrido GramDet.
+  - GrassmannianPress su layer GramDet via eviction_params (fallback A)
+  - QFilterPress / RandomPress su layer standard via kvpress
 
 Usage:
     /venv/main/bin/python scripts/benchmark_kvpress.py
+    /venv/main/bin/python scripts/benchmark_kvpress.py --gramdet
 
 Dipendenze: pip install kvpress transformers datasets
 """
 
-import os, sys, math, gc
+import os, sys, math, gc, argparse
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from datasets import load_dataset
@@ -39,24 +34,88 @@ except ImportError:
     print("[WARN] kvpress non installata, solo GrassmannianPress disponibile")
 
 MODEL = "meta-llama/Llama-3.2-1B"
-LAYERS_ANALYZE = [8, 10, 12, 14]
+INDICES = [8, 10, 12, 14]  # GramDet layer
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DTYPE = torch.bfloat16
 PREFIX_LEN = 256
 SUFFIX_LEN = 256
 SEQ_LEN = PREFIX_LEN + SUFFIX_LEN
 NUM_SEQUENCES = 10
-# compression_ratio per kvpress: frazione di chiavi da EVINCERE
-# budget = 1 - compression_ratio (budget tradizionale: frazione da TENERE)
-COMPRESSION_RATIOS = [0.0, 0.5, 0.7, 0.9]  # corrisponde a budget 100%, 50%, 30%, 10%
+BUDGETS = [1.0, 0.5, 0.3, 0.1]
 
 
-def compute_U_mean_llama():
-    """Calcola U_mean su LLaMA puro usando analyze_llama_pure."""
+def compute_U_mean_llama(gramdet_mode=False):
+    """Calcola U_mean su LLaMA puro o su GramDet (se gramdet_mode)."""
+    if gramdet_mode:
+        print("Calcolo U_mean su modello GramDet step 0...")
+        # Carica e converti
+        model = AutoModelForCausalLM.from_pretrained(
+            MODEL, torch_dtype=DTYPE, device_map=DEVICE,
+            attn_implementation="eager",
+        )
+        from src.modeling.convert_to_hybrid import convert_llama_to_hybrid
+        model, _ = convert_llama_to_hybrid(
+            model, simplicial_indices=INDICES,
+            attention_type="gram_det", gram_window=8,
+        )
+        model.eval()
+
+        from src.geometry.hooks import ActivationSaver, batch_to_planes_gram_det
+        from src.geometry.grassmann import frechet_mean_planes
+
+        num_heads = model.config.num_attention_heads
+        head_dim = model.config.hidden_size // model.config.num_attention_heads
+
+        # Carica Wikitext
+        wikitext_local = "./data/wikitext_test"
+        if os.path.exists(wikitext_local):
+            ds = load_from_disk(wikitext_local)
+        else:
+            ds = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
+
+        all_texts = [ex["text"] for ex in ds if ex.get("text", "").strip()]
+        tokenizer = AutoTokenizer.from_pretrained(MODEL)
+        tokenizer.pad_token = tokenizer.eos_token
+
+        all_U_means = []
+        for layer_idx in INDICES:
+            all_U = []
+            text_cursor = 0
+            for _ in range(5):
+                texts = []
+                while len(texts) < 2 and text_cursor < len(all_texts):
+                    texts.append(all_texts[text_cursor][:SEQ_LEN*4])
+                    text_cursor += 1
+                if not texts:
+                    break
+                enc = tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=SEQ_LEN)
+                input_ids = enc["input_ids"].to(DEVICE)
+                saver = ActivationSaver(model, INDICES, "gram_det")
+                saver.register_hooks()
+                model(input_ids)
+                activations = saver.get_data()
+                saver.remove_hooks()
+                U_list, _ = batch_to_planes_gram_det(
+                    activations, layer_idx, num_heads, head_dim, DEVICE, num_pairs=500,
+                )
+                all_U.append(U_list)
+            if all_U:
+                U_layer = torch.cat(all_U, dim=0)
+                U_mean, _ = frechet_mean_planes(U_layer, n_iter=10, verbose=False)
+                all_U_means.append(U_mean)
+
+        U_mean = torch.stack(all_U_means, dim=0).mean(dim=0)
+        print(f"  U_mean: {U_mean.shape} su {U_mean.device}")
+        gc.collect()
+        torch.cuda.empty_cache()
+        del model
+        return U_mean
+
+    # Modo normale: analyze_llama_pure
     print("Calcolo U_mean su LLaMA puro...")
     results = analyze_llama_pure(
         model_name=MODEL,
-        simplicial_indices=LAYERS_ANALYZE,
+        simplicial_indices=INDICES,
         num_analysis_batches=5,
         seq_length=256,
         device=DEVICE,
@@ -65,32 +124,59 @@ def compute_U_mean_llama():
         do_shuffle_test=False,
     )
     U_means = []
-    for lidx in LAYERS_ANALYZE:
+    for lidx in INDICES:
         if lidx in results:
             U_means.append(results[lidx]["U_mean"])
     if not U_means:
         raise RuntimeError("Nessun U_mean disponibile!")
-    U_mean = torch.stack(U_means, dim=0).mean(dim=0)  # [64, 2] float32
+    U_mean = torch.stack(U_means, dim=0).mean(dim=0)
     print(f"  U_mean: {U_mean.shape} su {U_mean.device}")
     gc.collect()
     torch.cuda.empty_cache()
     return U_mean
 
 
-def get_model_and_tokenizer():
-    """Carica LLaMA standard."""
+def get_model_and_tokenizer(gramdet_mode=False):
+    """Carica LLaMA standard, opzionalmente convertito in GramDet."""
     print(f"Caricamento {MODEL}...")
     model = AutoModelForCausalLM.from_pretrained(
         MODEL, torch_dtype=DTYPE, device_map=DEVICE,
         attn_implementation="eager",
     )
+    if gramdet_mode:
+        from src.modeling.convert_to_hybrid import convert_llama_to_hybrid
+        print("  Conversione in GramDet ibrido...")
+        model, _ = convert_llama_to_hybrid(
+            model, simplicial_indices=INDICES,
+            attention_type="gram_det", gram_window=8,
+        )
     model.eval()
     tokenizer = AutoTokenizer.from_pretrained(MODEL)
     tokenizer.pad_token = tokenizer.eos_token
     return model, tokenizer
 
 
-def run_benchmark():
+def set_eviction_params(model, U_mean, budget, strategy):
+    """Imposta eviction_params sui layer GramDet."""
+    for idx in INDICES:
+        attn = model.model.layers[idx].self_attn
+        if hasattr(attn, "eviction_params"):
+            attn.eviction_params = {
+                "U_mean": U_mean,
+                "budget": budget,
+                "strategy": strategy,
+            }
+
+
+def clear_eviction_params(model):
+    """Rimuove eviction_params dai layer GramDet."""
+    for idx in INDICES:
+        attn = model.model.layers[idx].self_attn
+        if hasattr(attn, "eviction_params"):
+            attn.eviction_params = None
+
+
+def run_benchmark(gramdet_mode=False):
     # Prepara dati
     _, tokenizer = get_model_and_tokenizer()
     
@@ -118,8 +204,8 @@ def run_benchmark():
     torch.cuda.empty_cache()
     
     # Carica U_mean e modello
-    U_mean = compute_U_mean_llama()
-    model, tokenizer = get_model_and_tokenizer()
+    U_mean = compute_U_mean_llama(gramdet_mode)
+    model, tokenizer = get_model_and_tokenizer(gramdet_mode)
     
     sequences = []
     for i in range(NUM_SEQUENCES):
@@ -132,69 +218,87 @@ def run_benchmark():
     
     print(f"Sequenze da {SEQ_LEN} token: {len(sequences)}")
     
-    # Benchmark
+    # Header
+    mode_str = "GramDet step 0" if gramdet_mode else "LLaMA puro"
     headers = f"{'Budget':>8} {'Grassmann':>12} {'QFilter':>12} {'Random':>12}"
-    print(f"\nBenchmark KV eviction su {MODEL} (kvpress)")
+    print(f"\nBenchmark KV eviction su {MODEL} ({mode_str}, kvpress)")
     print(f"Prefisso: {PREFIX_LEN} token | Suffisso: {SUFFIX_LEN} token")
+    print(f"Layer GramDet: {INDICES}")
     print(headers)
     print("-" * 48)
     
-    # Per ogni compression_ratio
-    for cr in COMPRESSION_RATIOS:
-        budget = 1.0 - cr  # budget tradizionale per output
-        print(f"\nBudget {budget*100:.0f}% (compression={cr:.0%})...")
+    results = {s: {"grassmann": [], "qfilter": [], "random": []} for s in BUDGETS}
+    
+    for budget in BUDGETS:
+        cr = 1.0 - budget  # compression_ratio per kvpress
+        print(f"\nBudget {budget*100:.0f}%...")
         
-        results = {"grassmann": [], "qfilter": [], "random": []}
-        strategies = ["grassmann"]
-        if HAVE_KVPRESS:
-            strategies = ["grassmann", "qfilter", "random"]
-        
-        with torch.no_grad():
-            for seq_idx, input_ids in enumerate(sequences):
-                input_ids = input_ids.to(DEVICE).unsqueeze(0)
-                prefix = input_ids[:, :PREFIX_LEN]
-                suffix = input_ids[:, PREFIX_LEN:]
-                
-                for strategy in strategies:
-                    # Crea press
-                    if strategy == "grassmann":
-                        press = GrassmannianPress(
-                            U_mean=U_mean,
-                            compression_ratio=cr,
-                        )
-                    elif strategy == "qfilter" and HAVE_KVPRESS:
-                        press = QFilterPress(compression_ratio=cr)
-                    elif strategy == "random" and HAVE_KVPRESS:
-                        press = RandomPress(compression_ratio=cr)
-                    else:
-                        continue
-                    
-                    # Forward con press (eviction durante prefisso)
+        for seq_idx, input_ids in enumerate(sequences):
+            input_ids = input_ids.to(DEVICE).unsqueeze(0)
+            prefix = input_ids[:, :PREFIX_LEN]
+            suffix = input_ids[:, PREFIX_LEN:]
+            
+            with torch.no_grad():
+                # === GrassmannianPress ===
+                # Su GramDet: via eviction_params (fallback A)
+                # Su LLaMA puro: via kvpress
+                if gramdet_mode:
+                    set_eviction_params(model, U_mean, budget, "qfilter")
+                    out = model(prefix, use_cache=True)
+                    clear_eviction_params(model)
+                else:
+                    press = GrassmannianPress(
+                        U_mean=U_mean, compression_ratio=cr,
+                    )
                     with press(model):
                         out = model(prefix, use_cache=True)
-                    
-                    # Forward suffisso con KV ridotto
+                
+                out_suffix = model(suffix, past_key_values=out.past_key_values)
+                logits = out_suffix.logits
+                loss_fct = torch.nn.CrossEntropyLoss()
+                shift_logits = logits[:, :-1, :].reshape(-1, logits.shape[-1])
+                shift_labels = suffix[:, 1:].reshape(-1)
+                loss = loss_fct(shift_logits, shift_labels)
+                results[budget]["grassmann"].append(loss.item())
+                
+                # === QFilterPress (kvpress) ===
+                if HAVE_KVPRESS:
+                    press = QFilterPress(compression_ratio=cr)
+                    with press(model):
+                        out = model(prefix, use_cache=True)
                     out_suffix = model(suffix, past_key_values=out.past_key_values)
                     logits = out_suffix.logits
                     loss_fct = torch.nn.CrossEntropyLoss()
                     shift_logits = logits[:, :-1, :].reshape(-1, logits.shape[-1])
                     shift_labels = suffix[:, 1:].reshape(-1)
                     loss = loss_fct(shift_logits, shift_labels)
-                    
-                    results[strategy].append(loss.item())
+                    results[budget]["qfilter"].append(loss.item())
+                
+                # === RandomPress (kvpress) ===
+                if HAVE_KVPRESS:
+                    press = RandomPress(compression_ratio=cr)
+                    with press(model):
+                        out = model(prefix, use_cache=True)
+                    out_suffix = model(suffix, past_key_values=out.past_key_values)
+                    logits = out_suffix.logits
+                    loss_fct = torch.nn.CrossEntropyLoss()
+                    shift_logits = logits[:, :-1, :].reshape(-1, logits.shape[-1])
+                    shift_labels = suffix[:, 1:].reshape(-1)
+                    loss = loss_fct(shift_logits, shift_labels)
+                    results[budget]["random"].append(loss.item())
         
         # Stampa riga
-        grass_avg = sum(results["grassmann"]) / len(results["grassmann"])
+        grass_avg = sum(results[budget]["grassmann"]) / len(results[budget]["grassmann"])
         grass_ppl = math.exp(grass_avg)
         
-        if HAVE_KVPRESS and len(results["qfilter"]) > 0:
-            qf_avg = sum(results["qfilter"]) / len(results["qfilter"])
+        if HAVE_KVPRESS and len(results[budget]["qfilter"]) > 0:
+            qf_avg = sum(results[budget]["qfilter"]) / len(results[budget]["qfilter"])
             qf_ppl = math.exp(qf_avg)
         else:
             qf_ppl = 0.0
         
-        if HAVE_KVPRESS and len(results["random"]) > 0:
-            ra_avg = sum(results["random"]) / len(results["random"])
+        if HAVE_KVPRESS and len(results[budget]["random"]) > 0:
+            ra_avg = sum(results[budget]["random"]) / len(results[budget]["random"])
             ra_ppl = math.exp(ra_avg)
         else:
             ra_ppl = 0.0
@@ -203,4 +307,7 @@ def run_benchmark():
 
 
 if __name__ == "__main__":
-    run_benchmark()
+    parser = argparse.ArgumentParser(description="Benchmark KV eviction con kvpress")
+    parser.add_argument("--gramdet", action="store_true", help="Usa modello GramDet ibrido (step 0)")
+    args = parser.parse_args()
+    run_benchmark(gramdet_mode=args.gramdet)
