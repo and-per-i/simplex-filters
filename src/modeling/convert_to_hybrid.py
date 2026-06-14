@@ -60,6 +60,7 @@ def _init_simplicial_layer(layer, config, layer_idx, q_weight, k_weight_32, v_we
     q, k1, v1 (pre-trained, espansi), k2, v2 (pre-trained + α·noise), o.
     """
     new_attn = SimplicialAttention(config, layer_idx, w1=w1, w2=w2)
+    new_attn.layer_idx = layer_idx  # necessario per kvpress
     new_attn.q_proj.weight.data = q_weight
     new_attn.o_proj.weight.data = o_weight
     new_attn.k1_proj.weight.data = k_weight_32
@@ -84,6 +85,7 @@ def _init_gram_det_layer(layer, config, layer_idx, q_weight, k_weight_32, v_weig
         window_size=w,
         scaling=scaling,
     )
+    new_attn.layer_idx = layer_idx  # necessario per kvpress
     # Converti tutto il layer in bfloat16 + CUDA (matcha il dtype del modello)
     new_attn = new_attn.to(dtype=torch.bfloat16, device=q_weight.device)
     # Ora copy_() e' tra tensori dello stesso dtype (bfloat16)
