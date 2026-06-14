@@ -97,8 +97,8 @@ def _do_train(config: dict):
     max_perplexity_gap = config.get("max_perplexity_gap", 10.0)
     checkpoint_dir = config["checkpoint_dir"]
     alpha = config.get("alpha", 0.01)
-    w1 = config["w1"]
-    w2 = config["w2"]
+    w1 = config.get("w1", 0)
+    w2 = config.get("w2", 0)
     gram_window = config.get("gram_window", 8)
     scaling = config.get("scaling", 10.0)
     lr_k2v2 = config["lr_k2v2"]
