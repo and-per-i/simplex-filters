@@ -322,6 +322,36 @@ def analyze_checkpoint(
     return results
 
 
+def auto_layer_indices(model_name: str, num_layers: int = 4) -> list:
+    """
+    Deriva automaticamente gli indici dei layer centrali di un modello.
+    Utile per --analyze-llama su modelli con diverso numero di layer.
+    
+    Args:
+        model_name: nome del modello HF
+        num_layers: numero di layer da restituire (default: 4)
+        
+    Returns:
+        lista di indici dei layer centrali, equidistanti
+    """
+    from transformers import AutoConfig
+    try:
+        cfg = AutoConfig.from_pretrained(model_name)
+        n = cfg.num_hidden_layers
+    except Exception:
+        # Fallback: assumi 32 layer (8B)
+        n = 32
+    
+    if num_layers == 4:
+        mid = n // 2
+        return [mid - 3, mid - 1, mid + 1, mid + 3]
+    else:
+        # Stride uniforme
+        stride = max(1, (n - 1) // (num_layers - 1)) if num_layers > 1 else 0
+        indices = [1 + i * stride for i in range(num_layers)]
+        return [min(i, n - 2) for i in indices]
+
+
 def analyze_llama_pure(
     model_name: str = "meta-llama/Llama-3.1-8B",
     simplicial_indices: List[int] = [16, 20, 24, 28],
