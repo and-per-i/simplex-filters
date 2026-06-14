@@ -222,12 +222,17 @@ def analyze_checkpoint(
         
         for batch_idx in range(num_analysis_batches):
             # Prepara batch
+            # Raccogli fino a 2 testi non vuoti (Wikitext-2 ha molti record vuoti)
             texts = []
-            for _ in range(2):
+            collection_tries = 0
+            while len(texts) < 2 and collection_tries < 20:
                 try:
-                    texts.append(next(iter(dataset))["text"][:seq_length*4])
+                    t = next(iter(dataset))["text"]
+                    if t.strip():  # skip empty records
+                        texts.append(t[:seq_length*4])
                 except StopIteration:
                     break
+                collection_tries += 1
             if not texts:
                 break
             
@@ -439,23 +444,22 @@ def analyze_llama_pure(
         all_q = []
         
         for batch_idx in range(num_analysis_batches):
+            # Raccogli fino a 2 testi non vuoti (Wikitext-2 ha molti record vuoti)
             texts = []
-            for _ in range(2):
+            collection_tries = 0
+            while len(texts) < 2 and collection_tries < 20:
                 try:
-                    texts.append(next(iter(dataset))["text"][:seq_length*4])
+                    t = next(iter(dataset))["text"]
+                    if t.strip():  # skip empty records
+                        texts.append(t[:seq_length*4])
                 except StopIteration:
                     break
+                collection_tries += 1
             if not texts:
                 break
             
             enc = tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=seq_length)
             input_ids = enc["input_ids"].to(device)
-            
-            # Salta batch vuoti (tokenizer potrebbe produrre seq_len=0 per certi testi)
-            if input_ids.numel() == 0 or input_ids.shape[1] == 0:
-                if verbose:
-                    print(f"    Skip batch {batch_idx}: sequenza vuota dopo tokenizzazione")
-                continue
             
             saver = ActivationSaver(model, simplicial_indices)
             saver.register_llama_hooks()
