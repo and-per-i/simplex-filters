@@ -205,6 +205,11 @@ def run_benchmark():
                 outputs = model(prefix, use_cache=True)
                 past = outputs.past_key_values
                 
+                # DynamicCache → tuple of tuple per compatibilità
+                past = outputs.past_key_values
+                if hasattr(past, 'to_legacy_cache'):
+                    past = past.to_legacy_cache()
+                
                 for strategy in ["qfilter", "random", "fifo"]:
                     if budget == 1.0 and strategy != "qfilter":
                         continue  # idem, salta
