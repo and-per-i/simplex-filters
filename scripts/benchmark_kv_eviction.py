@@ -209,24 +209,51 @@ def run_benchmark():
                 past_type_name = type(past).__name__
                 if past_type_name == 'DynamicCache':
                     # DynamicCache: prova tutti i pattern di accesso noti
-                    try:
-                        # Pattern 1: key_cache/ value_cache come proprietà o attributi
-                        past = tuple(zip(past.key_cache, past.value_cache))
-                    except (AttributeError, TypeError):
+                    converted = False
+                    
+                    # Pattern 1: past.layers[i].key_cache / .value_cache (transformers 4.37+)
+                    if hasattr(past, 'layers') and past.layers:
                         try:
-                            # Pattern 2: to_legacy_cache()
-                            past = past.to_legacy_cache()
+                            layer0 = past.layers[0]
+                            if hasattr(layer0, 'key_cache') and hasattr(layer0, 'value_cache'):
+                                past = tuple((layer.key_cache, layer.value_cache) for layer in past.layers)
+                                converted = True
+                        except Exception as e:
+                            print(f"  Pattern layers fallito: {e}")
+                    
+                    if not converted:
+                        try:
+                            # Pattern 2: key_cache/ value_cache come proprietà del DynamicCache
+                            past = tuple(zip(past.key_cache, past.value_cache))
+                            converted = True
                         except (AttributeError, TypeError):
-                            try:
-                                # Pattern 3: attributi privati _key_cache / _value_cache
-                                past = tuple(zip(past._key_cache, past._value_cache))
-                            except (AttributeError, TypeError):
-                                # Pattern 4: iterazione con range(len())
-                                try:
-                                    past = tuple((past._key_cache[i], past._value_cache[i]) for i in range(len(past)))
-                                except:
-                                    print(f"ERROR: impossibile convertire {past_type_name}, attributi: {[a for a in dir(past) if not a.startswith('__')]}")
-                                    raise
+                            pass
+                    
+                    if not converted:
+                        try:
+                            # Pattern 3: to_legacy_cache()
+                            past = past.to_legacy_cache()
+                            converted = True
+                        except (AttributeError, TypeError):
+                            pass
+                    
+                    if not converted:
+                        try:
+                            # Pattern 4: attributi privati _key_cache / _value_cache
+                            past = tuple(zip(past._key_cache, past._value_cache))
+                            converted = True
+                        except (AttributeError, TypeError):
+                            pass
+                    
+                    if not converted:
+                        # Pattern 5: stampa diagnostica dettagliata
+                        print(f"ERROR: impossibile convertire {past_type_name}", flush=True)
+                        print(f"  Attributi DynamicCache: {[a for a in dir(past) if not a.startswith('__')]}", flush=True)
+                        if hasattr(past, 'layers') and past.layers:
+                            layer0 = past.layers[0]
+                            print(f"  Tipo layer0: {type(layer0).__name__}", flush=True)
+                            print(f"  Attributi layer0: {[a for a in dir(layer0) if not a.startswith('__')]}", flush=True)
+                        raise RuntimeError(f"Impossibile convertire DynamicCache ({past_type_name})")
                 elif hasattr(past, 'to_legacy_cache'):
                     past = past.to_legacy_cache()
                 
