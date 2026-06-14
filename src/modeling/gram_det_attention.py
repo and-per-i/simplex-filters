@@ -57,6 +57,7 @@ class GramDetAttention(nn.Module):
         n_heads: int,
         head_dim: int | None = None,
         window_size: int = 8,
+        scaling: float = 10.0,
         dropout: float = 0.0,
     ):
         super().__init__()
@@ -65,7 +66,7 @@ class GramDetAttention(nn.Module):
         self.head_dim = head_dim or (d_model // n_heads)
         self.W = window_size  # half-window
         self.W_full = 2 * self.W + 1  # dimensione totale finestra
-        self.scaling = 10.0  # testato: 0.088 e 1.0 davano softmax uniforme; 10.0 selettiva ma non one-hot
+        self.scaling = scaling  # testato: 0.088 e 1.0 davano softmax uniforme; 10.0 selettiva ma non one-hot
 
         # Pre-calcola e registra gli indici delle coppie come buffer
         pair_indices = _build_pair_indices(self.W)  # [P, 2]

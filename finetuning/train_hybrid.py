@@ -100,6 +100,7 @@ def _do_train(config: dict):
     w1 = config["w1"]
     w2 = config["w2"]
     gram_window = config.get("gram_window", 8)
+    scaling = config.get("scaling", 10.0)
     lr_k2v2 = config["lr_k2v2"]
     lr_k1v1 = config["lr_k1v1"]
     lr_standard = config.get("lr_standard", 1e-5)
@@ -138,6 +139,7 @@ def _do_train(config: dict):
     model, converted = convert_llama_to_hybrid(
         model, simplicial_indices=simplicial_indices, alpha=alpha,
         w1=w1, w2=w2, attention_type=attention_type, gram_window=gram_window,
+        scaling=scaling,
     )
 
     # Resume

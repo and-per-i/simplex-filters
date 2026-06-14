@@ -71,7 +71,7 @@ def _init_simplicial_layer(layer, config, layer_idx, q_weight, k_weight_32, v_we
     return new_attn
 
 
-def _init_gram_det_layer(layer, config, layer_idx, q_weight, k_weight_32, v_weight_32, o_weight, w):
+def _init_gram_det_layer(layer, config, layer_idx, q_weight, k_weight_32, v_weight_32, o_weight, w, scaling=10.0):
     """
     Inizializza un layer GramDetAttention.
     Usa una sola proiezione Q/K/V (32 teste, da originale espanso).
@@ -82,6 +82,7 @@ def _init_gram_det_layer(layer, config, layer_idx, q_weight, k_weight_32, v_weig
         n_heads=config.num_attention_heads,
         head_dim=config.hidden_size // config.num_attention_heads,
         window_size=w,
+        scaling=scaling,
     )
     # Converti tutto il layer in bfloat16 + CUDA (matcha il dtype del modello)
     new_attn = new_attn.to(dtype=torch.bfloat16, device=q_weight.device)
@@ -101,6 +102,7 @@ def convert_llama_to_hybrid(
     w2: int = 256,
     attention_type: str = "simplicial",
     gram_window: int = 8,
+    scaling: float = 10.0,
 ):
     """
     Converte un LLaMAForCausalLM in un modello ibrido.
@@ -125,6 +127,7 @@ def convert_llama_to_hybrid(
         w2: finestra K2 (solo simplicial)
         attention_type: "simplicial" | "gram_det"
         gram_window: half-window per gram_det (default: 8)
+        scaling: scaling del determinante di Gram (default: 10.0)
     
     Returns:
         model: modello ibrido
@@ -134,7 +137,7 @@ def convert_llama_to_hybrid(
         f"attention_type deve essere 'simplicial' o 'gram_det', got '{attention_type}'"
     
     print(f"[convert_to_hybrid] Conversione di {len(simplicial_indices)} layer in {attention_type}")
-    print(f"  α={alpha}, w1={w1}, w2={w2}" if attention_type == "simplicial" else f"  gram_window={gram_window}")
+    print(f"  α={alpha}, w1={w1}, w2={w2}" if attention_type == "simplicial" else f"  gram_window={gram_window}, scaling={scaling}")
     print(f"  Layer indices: {simplicial_indices}")
     
     converted_layers = []
@@ -162,7 +165,7 @@ def convert_llama_to_hybrid(
             new_attn = _init_gram_det_layer(
                 old_attn, model.config, layer_idx,
                 q_weight, k_weight_32, v_weight_32, o_weight,
-                gram_window,
+                gram_window, scaling,
             )
         
         model.model.layers[layer_idx].self_attn = new_attn

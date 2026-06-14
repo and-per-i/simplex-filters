@@ -1,0 +1,48 @@
+# ==========================================================================
+# Configurazione training GramDet su LLaMA 3.2 1B + C4
+# ==========================================================================
+
+# Modello
+model_name: "meta-llama/Llama-3.2-1B"
+attention_type: "gram_det"
+simplicial_indices: [8, 10, 12, 14]
+gram_window: 8
+scaling: 10.0
+
+# Dataset
+dataset_name: "allenai/c4"
+dataset_config: "en"
+seq_length: 512
+val_dataset: "wikitext"
+val_dataset_config: "wikitext-2-raw-v1"
+val_samples: 500
+
+# Training
+max_steps: 15000
+start_step: 0
+baseline_ppl: 12.67
+per_device_batch_size: 4
+gradient_accumulation_steps: 4
+warmup_steps: 100
+early_stop_ppl: 9999
+max_perplexity_gap: 10.0
+
+# Learning rates (GramDet usa solo lr_k2v2 per i proiettori)
+lr_k2v2: 5.0e-4
+lr_k1v1: 2.0e-5
+lr_standard: 5e-6
+weight_decay: 0.01
+beta1: 0.9
+beta2: 0.95
+
+# Checkpoint directory (cambiato da trilinear/ a gramdet_1b/)
+checkpoint_dir: "./gramdet_1b"
+save_every: 2000
+
+# Monitoring
+log_every: 10
+val_every: 500
+
+# Weights & Biases
+wandb_project: "simplex-filters"
+wandb_run_name: "llama-gramdet-1b-c4"
