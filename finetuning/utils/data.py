@@ -247,34 +247,48 @@ def prepare_validation_batch(
 ):
     """
     Prepara un batch fisso di validazione da Wikitext-2.
-    Usato per benchmark finale DOPO il training.
+    Usa la concatenazione come prepare_c4_validation_batch per evitare problemi
+    con HF streaming (Vast proxy) e .shuffle() su dataset locali.
     """
-    dataset = _load_dataset_or_fallback(
-        "Salesforce/wikitext", "wikitext-2-raw-v1", "test",
-        WIKITEST_PATH, streaming=True,
-    )
-    dataset = dataset.shuffle(seed=42, buffer_size=10000).take(num_samples * 2)
+    # Carica dataset (disco locale o HF)
+    if os.path.exists(WIKITEST_PATH):
+        print(f"  [INFO] Validation da disco: {WIKITEST_PATH}")
+        import datasets
+        dataset = datasets.load_from_disk(WIKITEST_PATH)
+    else:
+        print(f"  [INFO] Validation da HF: Wikitext-2 test")
+        dataset = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
+
+    # Concatena tutti i record in un unico stream di token
+    all_tokens = _concat_dataset_into_token_stream(tokenizer, dataset)
+    total_tokens = len(all_tokens)
+    print(f"  Token totali nello stream: {total_tokens:,}")
+
+    # Calcola quanti chunk possiamo ottenere
+    needed_tokens = num_samples * (seq_length + 1)
+    if total_tokens < needed_tokens:
+        print(f"  [WARN] Solo {total_tokens} token, necessari {needed_tokens} per {num_samples} campioni")
+        actual_samples = max(1, total_tokens // (seq_length + 1))
+    else:
+        actual_samples = num_samples
 
     all_input_ids = []
     all_labels = []
 
-    for example in dataset:
-        text = example.get("text", "")
-        if not text.strip():
-            continue
-        tokens = tokenizer.encode(text, add_special_tokens=False, truncation=True, max_length=seq_length + 1)
-        if len(tokens) < seq_length + 1:
-            continue
-        all_input_ids.append(tokens[:seq_length])
-        all_labels.append(tokens[1:seq_length + 1])
+    for i in range(actual_samples):
+        start = i * (seq_length + 1)
+        chunk = all_tokens[start : start + seq_length + 1]
+        if len(chunk) < seq_length + 1:
+            chunk = chunk + [0] * (seq_length + 1 - len(chunk))
+        all_input_ids.append(chunk[:seq_length])
+        all_labels.append(chunk[1:seq_length + 1])
 
-        if len(all_input_ids) >= num_samples:
-            break
+    # Padding per arrivare a num_samples
+    while len(all_input_ids) < num_samples:
+        all_input_ids.append([0] * seq_length)
+        all_labels.append([0] * seq_length)
 
-    if not all_input_ids:
-        all_input_ids = [[0] * seq_length]
-        all_labels = [[0] * seq_length]
-
+    print(f"  Batch creato: {len(all_input_ids)} campioni")
     return {
         "input_ids": torch.tensor(all_input_ids[:num_samples], dtype=torch.long, device=device),
         "labels": torch.tensor(all_labels[:num_samples], dtype=torch.long, device=device),
