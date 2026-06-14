@@ -116,8 +116,8 @@ def analyze_checkpoint(
     if verbose:
         print(f"\nFASE 1/3: Caricamento modello LLaMA base da {base_model_path}")
     
-    # Su CPU, BFloat16 non supporta linalg_svd → usiamo float32
-    model_dtype = torch.float32 if device == "cpu" else torch.bfloat16
+    # Su CPU, BFloat16 va bene per forward; SVD usa già .float() internamente
+    model_dtype = torch.bfloat16
     hf_token = os.environ.get("HF_TOKEN")
     model = AutoModelForCausalLM.from_pretrained(
         base_model_path,
