@@ -12,7 +12,7 @@ scaling: 10.0
 # Dataset
 dataset_name: "allenai/c4"
 dataset_config: "en"
-seq_length: 512
+seq_length: 128
 val_dataset: "wikitext"
 val_dataset_config: "wikitext-2-raw-v1"
 val_samples: 500
