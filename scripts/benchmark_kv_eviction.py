@@ -211,12 +211,17 @@ def run_benchmark():
                     # DynamicCache: prova tutti i pattern di accesso noti
                     converted = False
                     
-                    # Pattern 1: past.layers[i].key_cache / .value_cache (transformers 4.37+)
+                    # Pattern 1: accesso tramite past.layers (transformers 4.37+ / 5.x)
                     if hasattr(past, 'layers') and past.layers:
                         try:
                             layer0 = past.layers[0]
                             if hasattr(layer0, 'key_cache') and hasattr(layer0, 'value_cache'):
+                                # transformers 4.x (DynamicCacheLayer)
                                 past = tuple((layer.key_cache, layer.value_cache) for layer in past.layers)
+                                converted = True
+                            elif hasattr(layer0, 'keys') and hasattr(layer0, 'values'):
+                                # transformers 5.x (DynamicLayer)
+                                past = tuple((layer.keys, layer.values) for layer in past.layers)
                                 converted = True
                         except Exception as e:
                             print(f"  Pattern layers fallito: {e}")
