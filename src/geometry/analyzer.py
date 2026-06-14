@@ -406,7 +406,9 @@ def analyze_llama_pure(
     
     num_heads = model.config.num_attention_heads
     head_dim = model.config.hidden_size // model.config.num_attention_heads
-    kv_heads = getattr(model.config, "num_key_value_heads", num_heads // 4)
+    # MHA: num_key_value_heads == num_attention_heads (assenti nel config OLMo)
+    # GQA: num_key_value_heads < num_attention_heads (presente nel config LLaMA)
+    kv_heads = getattr(model.config, "num_key_value_heads", num_heads)
     
     if verbose:
         print(f"  Teste: {num_heads}, head_dim: {head_dim}, kv_heads: {kv_heads}")
