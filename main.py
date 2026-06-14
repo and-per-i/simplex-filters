@@ -553,6 +553,9 @@ def main():
                         help="Ferma al primo fallimento")
     parser.add_argument("--analyze-cpu", action="store_true",
                         help="Forza analisi geometrica su CPU (quando GPU e' occupata dal training)")
+    parser.add_argument("--analysis-dataset", type=str, default="wikitext",
+                        choices=["wikitext", "c4"],
+                        help="Dataset per analisi geometrica (default: wikitext)")
 
     args = parser.parse_args()
 
@@ -633,6 +636,7 @@ def main():
                 seq_length=256,
                 device=device,
                 verbose=args.verbose,
+                dataset_name=args.analysis_dataset,
             )
             summarize_results(results)
             return 0
