@@ -610,6 +610,20 @@ def main():
     if args.analyze_llama:
         from src.geometry.analyzer import analyze_llama_pure, summarize_results
 
+        # Auto-deriva layer indices: prendi i 4 layer centrali
+        if args.simplicial_indices == "16,20,24,28":
+            # Solo per LLaMA 1B (16 layer), auto-deriva
+            from transformers import AutoConfig
+            try:
+                cfg = AutoConfig.from_pretrained(model_name)
+                num_layers = cfg.num_hidden_layers
+                mid = num_layers // 2
+                simplicial_indices = [mid - 3, mid - 1, mid + 1, mid + 3]
+                if args.verbose:
+                    print(f"  [INFO] Auto-derivati layer simpliciali: {simplicial_indices} ({num_layers} layer totali)")
+            except Exception:
+                pass  # usa default
+
         device = "cpu" if args.analyze_cpu else "cuda"
         print(f"\n{BOLD}{'=' * 60}{NC}")
         print(f"{BOLD}  ANALISI LLaMA PURO (nessuna conversione){NC}")
