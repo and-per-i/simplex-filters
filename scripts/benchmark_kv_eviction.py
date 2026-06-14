@@ -150,10 +150,11 @@ def apply_eviction_to_cache(cache, U_mean, budget, strategy, num_layers):
         v_new = v.squeeze(0).transpose(0, 1).reshape(-1, head_dim)[keep_ids]
         
         # Raggruppa per testa: [1, H, B_per_head, d]
+        # Usa reshape (non view) perché dopo indexing + transpose il tensor non è contiguo
         k_new = k_new.T.unsqueeze(0)  # [1, d, B']
         v_new = v_new.T.unsqueeze(0)  # [1, d, B']
-        k_new = k_new.view(1, num_heads, -1, head_dim)
-        v_new = v_new.view(1, num_heads, -1, head_dim)
+        k_new = k_new.reshape(1, num_heads, -1, head_dim)
+        v_new = v_new.reshape(1, num_heads, -1, head_dim)
         
         new_cache.update(k_new, v_new, layer_idx)
     
