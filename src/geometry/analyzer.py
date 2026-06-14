@@ -395,6 +395,7 @@ def analyze_llama_pure(
         device_map=model_device_map,
         attn_implementation="eager",
         token=hf_token,
+        trust_remote_code=True,
     )
     model.eval()
     
@@ -405,8 +406,8 @@ def analyze_llama_pure(
     if verbose:
         print(f"  Teste: {num_heads}, head_dim: {head_dim}, kv_heads: {kv_heads}")
     
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    tokenizer.pad_token = tokenizer.eos_token
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    tokenizer.pad_token = tokenizer.eos_token if tokenizer.eos_token is not None else tokenizer.pad_token
     
     # Dataset
     wikitext_local = "./data/wikitext_test"
@@ -441,6 +442,12 @@ def analyze_llama_pure(
             
             enc = tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=seq_length)
             input_ids = enc["input_ids"].to(device)
+            
+            # Salta batch vuoti (tokenizer potrebbe produrre seq_len=0 per certi testi)
+            if input_ids.numel() == 0 or input_ids.shape[1] == 0:
+                if verbose:
+                    print(f"    Skip batch {batch_idx}: sequenza vuota dopo tokenizzazione")
+                continue
             
             saver = ActivationSaver(model, simplicial_indices)
             saver.register_llama_hooks()
