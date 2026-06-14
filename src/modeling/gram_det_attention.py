@@ -61,6 +61,7 @@ class GramDetAttention(nn.Module):
         dropout: float = 0.0,
     ):
         super().__init__()
+        self.eviction_params = None  # dict con U_mean, budget, strategy (impostato dall'esterno)
         self.d_model = d_model
         self.n_heads = n_heads
         self.head_dim = head_dim or (d_model // n_heads)
@@ -159,8 +160,49 @@ class GramDetAttention(nn.Module):
         v_windows = v_pad[:, :, win_idx, :]  # [B, H, N, 2W+1, d]
 
         # 3. Pair indexing vettorizzato
-        # pair_indices: [P, 2]  →  indici nella dim della finestra
         pi = self.pair_indices  # [P, 2]
+        
+        # ================================================================
+        # EVICTION Q-FILTER (opzionale, solo se self.eviction_params e' impostato)
+        # Azzera le chiavi a basso score (normale P̄) nella finestra.
+        # Le coppie pair_indices rimangono valide perché la finestra ha
+        # la stessa dimensione — le chiavi azzerate producono piani degeneri
+        # (k=0 → piano nullo) che ricevono peso softmax ≈ 0.
+        # ================================================================
+        if self.eviction_params is not None:
+            params = self.eviction_params
+            U_mean = params["U_mean"].to(x.device)
+            budget = params["budget"]
+            strategy = params.get("strategy", "qfilter")
+            
+            B = k_windows.shape[0]
+            H = k_windows.shape[1]
+            N = k_windows.shape[2]
+            win_size = k_windows.shape[3]
+            total_pos = B * H * N
+            
+            if strategy == "qfilter":
+                from src.kv_cache.qfilter_score import qfilter_score_orthogonal
+                # Crea maschera: 1 = preserva, 0 = elimina
+                mask = torch.zeros(B, H, N, win_size, 1, device=x.device)
+                for b in range(B):
+                    for h in range(H):
+                        for n_ in range(N):
+                            keys_window = k_windows[b, h, n_]  # [win_size, d]
+                            scores = qfilter_score_orthogonal(keys_window, U_mean)
+                            max_survive = max(1, int(win_size * budget))
+                            _, top_ids = torch.topk(scores, max_survive)
+                            mask[b, h, n_, top_ids] = 1.0
+                k_windows = k_windows * mask
+                v_windows = v_windows * mask
+            else:
+                # random eviction: stessa maschera per tutte le posizioni
+                max_survive = max(1, int(win_size * budget))
+                rand_ids = torch.randperm(win_size, device=x.device)[:max_survive]
+                mask = torch.zeros(win_size, 1, device=x.device)
+                mask[rand_ids] = 1.0
+                k_windows = k_windows * mask.reshape(1, 1, 1, -1, 1)
+                v_windows = v_windows * mask.reshape(1, 1, 1, -1, 1)
 
         # k1: [B, H, N, P, d], k2: [B, H, N, P, d]
         k1 = k_windows[:, :, :, pi[:, 0], :]  # [B, H, N, P, d]
