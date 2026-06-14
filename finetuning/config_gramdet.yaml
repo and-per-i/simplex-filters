@@ -24,8 +24,8 @@ baseline_ppl: 12.67
 per_device_batch_size: 4
 gradient_accumulation_steps: 4
 warmup_steps: 100
-early_stop_ppl: 9999
-max_perplexity_gap: 10.0
+early_stop_ppl: 0
+max_perplexity_gap: 0
 
 # Learning rates (GramDet usa solo lr_k2v2 per i proiettori)
 lr_k2v2: 5.0e-4
