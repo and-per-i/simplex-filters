@@ -422,17 +422,28 @@ def analyze_llama_pure(
             tokenizer.eos_token = "<|endoftext|>"
             tokenizer.pad_token_id = tokenizer.convert_tokens_to_ids("<|endoftext|>")
     
-    # Dataset
+    # Dataset: carica tutti i testi non vuoti in una lista (una volta sola)
     wikitext_local = "./data/wikitext_test"
     if os.path.exists(wikitext_local):
         if verbose:
             print(f"  Dataset di analisi da disco: {wikitext_local}")
         from datasets import load_from_disk
-        dataset = load_from_disk(wikitext_local)
+        ds = load_from_disk(wikitext_local)
     else:
         if verbose:
             print(f"  Dataset di analisi da HF: Salesforce/wikitext")
-        dataset = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
+        ds = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
+    
+    # Converte in lista di testi non vuoti (evita iteratore che si resetta)
+    all_texts = []
+    for example in ds:
+        t = example.get("text", "")
+        if t.strip():
+            all_texts.append(t)
+    if verbose:
+        print(f"  Testi non vuoti nel dataset: {len(all_texts)}")
+    
+    text_cursor = 0
     
     results = {}
     
@@ -444,17 +455,11 @@ def analyze_llama_pure(
         all_q = []
         
         for batch_idx in range(num_analysis_batches):
-            # Raccogli fino a 2 testi non vuoti (Wikitext-2 ha molti record vuoti)
+            # Prendi fino a 2 testi non vuoti (avanzando il cursore)
             texts = []
-            collection_tries = 0
-            while len(texts) < 2 and collection_tries < 20:
-                try:
-                    t = next(iter(dataset))["text"]
-                    if t.strip():  # skip empty records
-                        texts.append(t[:seq_length*4])
-                except StopIteration:
-                    break
-                collection_tries += 1
+            while len(texts) < 2 and text_cursor < len(all_texts):
+                texts.append(all_texts[text_cursor][:seq_length*4])
+                text_cursor += 1
             if not texts:
                 break
             
