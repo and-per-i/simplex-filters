@@ -498,6 +498,8 @@ def main():
                         help="Esegue entrambi i training in sequenza: trilineare + Gram Det")
     parser.add_argument("--analyze", type=str, default=None,
                         help="Path a checkpoint da analizzare geometricamente")
+    parser.add_argument("--analyze-llama", action="store_true",
+                        help="Analisi geometrica su LLaMA puro (nessuna conversione)")
     parser.add_argument("--benchmark", type=str, default=None,
                         help="Path a checkpoint per benchmark eviction Q-filter")
     parser.add_argument("--ruler", type=str, default=None,
@@ -601,6 +603,37 @@ def main():
         free_gpu_memory()
 
         return 0
+
+    # ======================================================================
+    # MODALITA' ANALISI LLaMA PURO
+    # ======================================================================
+    if args.analyze_llama:
+        from src.geometry.analyzer import analyze_llama_pure, summarize_results
+
+        device = "cpu" if args.analyze_cpu else "cuda"
+        print(f"\n{BOLD}{'=' * 60}{NC}")
+        print(f"{BOLD}  ANALISI LLaMA PURO (nessuna conversione){NC}")
+        print(f"{BOLD}  Modello: {model_name}{NC}")
+        print(f"{BOLD}  Layer: {simplicial_indices}{NC}")
+        print(f"{BOLD}  Device: {device}{NC}")
+        print(f"{BOLD}{'=' * 60}{NC}\n")
+
+        try:
+            results = analyze_llama_pure(
+                model_name=model_name,
+                simplicial_indices=simplicial_indices,
+                num_analysis_batches=5,
+                seq_length=256,
+                device=device,
+                verbose=args.verbose,
+            )
+            summarize_results(results)
+            return 0
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print_err(f"Analisi LLaMA puro fallita: {e}")
+            return 1
 
     # ======================================================================
     # MODALITA' ANALISI GEOMETRICA

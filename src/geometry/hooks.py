@@ -48,6 +48,20 @@ class ActivationSaver:
             self.data[(layer_idx, key)].append(output.detach().cpu())
         return hook
     
+    def register_llama_hooks(self):
+        """
+        Registra forward hook su k_proj e q_proj di layer LLaMA standard.
+        Usato per analisi geometrica su modello non convertito.
+        """
+        for idx in self.simplicial_indices:
+            layer = self.model.model.layers[idx]
+            attn = layer.self_attn
+            # LLaMA standard: k_proj (KV heads), q_proj (Q heads)
+            h = attn.k_proj.register_forward_hook(self._make_hook(idx, 'k_proj'))
+            self.hooks.append(h)
+            h = attn.q_proj.register_forward_hook(self._make_hook(idx, 'q_proj'))
+            self.hooks.append(h)
+
     def register_hooks(self):
         """Registra forward hook su tutte le proiezioni dei layer simpliciali."""
         for idx in self.simplicial_indices:
@@ -132,6 +146,52 @@ def extract_key_vectors(
     x = x.view(B, S, num_heads, head_dim)
     x = x.reshape(-1, head_dim)
     
+    return x
+
+
+def extract_key_vectors_llama(
+    activations: Dict,
+    layer_idx: int,
+    proj_key: str,
+    num_heads: int = 32,
+    head_dim: int = 128,
+    kv_heads: int = 8,
+) -> torch.Tensor:
+    """
+    Estrae vettori K/Q da un layer LLaMA standard con GQA expansion.
+    
+    LLaMA ha k_proj/v_proj con output [B, S, kv_heads*head_dim] e
+    q_proj con output [B, S, n_heads*head_dim]. Per K, espandiamo
+    da kv_heads a n_heads via repeat (GQA 4:1).
+    
+    Args:
+        activations: dict dall'ActivationSaver
+        layer_idx: indice del layer
+        proj_key: 'k_proj' o 'q_proj'
+        num_heads: numero di Q heads (default: 32)
+        head_dim: dimensione testa
+        kv_heads: numero di KV heads (default: 8 per GQA 4:1)
+        
+    Returns:
+        vettori [N, head_dim] dove N = B*S*num_heads
+    """
+    key = (layer_idx, proj_key)
+    if key not in activations:
+        raise KeyError(f"Nessuna attivazione per layer {layer_idx}, {proj_key}")
+    
+    x = activations[key]  # [B, S, dim_out]
+    B, S, _ = x.shape
+    
+    if proj_key == 'q_proj':
+        # q_proj: [B, S, n_heads*head_dim] → [B*S*n_heads, head_dim]
+        x = x.view(B, S, num_heads, head_dim)
+    else:
+        # k_proj: [B, S, kv_heads*head_dim] → repeat 4× → [B, S, n_heads*head_dim]
+        num_repeats = num_heads // kv_heads
+        x = x.view(B, S, kv_heads, head_dim)
+        x = x.repeat_interleave(num_repeats, dim=2)  # [B, S, n_heads, head_dim]
+    
+    x = x.reshape(-1, head_dim)  # [B*S*n_heads, head_dim]
     return x
 
 
@@ -229,5 +289,60 @@ def batch_to_planes_gram_det(
         _, U, _ = plane_projector_and_basis(K[j1], K[j2])
         U_list[p] = U
         q_sampled[p] = Q[j1]  # query associata al primo token della coppia
+    
+    return U_list, q_sampled
+
+
+def batch_to_planes_llama_pure(
+    activations: Dict,
+    layer_idx: int,
+    num_heads: int = 32,
+    head_dim: int = 128,
+    kv_heads: int = 8,
+    device: str = "cpu",
+    num_pairs: int = 500,
+):
+    """
+    Estrae K/Q da un layer LLaMA standard (con GQA expansion) e
+    costruisce piani da coppie di vettori K, come GramDet.
+    Baseline per l'analisi geometrica pura di LLaMA non convertito.
+    
+    Args:
+        activations: dict dall'ActivationSaver (chiavi 'k_proj', 'q_proj')
+        layer_idx: indice del layer
+        num_heads: numero di Q heads
+        head_dim: dimensione testa
+        kv_heads: numero di KV heads (6 per 8B 3.1? 8 per 1B 3.2)
+        device: device
+        num_pairs: numero di coppie da campionare
+        
+    Returns:
+        U_list: basi ortonormali [num_pairs, d, 2]
+        Q_vectors: vettori query corrispondenti [num_pairs, d]
+    """
+    from src.geometry.plane import plane_projector_and_basis
+    
+    K = extract_key_vectors_llama(activations, layer_idx, 'k_proj', num_heads, head_dim, kv_heads).to(device)
+    Q = extract_key_vectors_llama(activations, layer_idx, 'q_proj', num_heads, head_dim).to(device)
+    
+    N = K.shape[0]
+    actual_pairs = min(num_pairs, N, N * (N - 1) // 2)
+    
+    all_indices = torch.randperm(N, device=device)
+    idx1 = all_indices
+    idx2 = all_indices[(torch.arange(N, device=device) + N // 2) % N]
+    if N > 1 and torch.all(idx1 == idx2):
+        idx2 = all_indices[(torch.arange(N, device=device) + N // 2 + 1) % N]
+    
+    U_list = torch.zeros(actual_pairs, head_dim, 2, device=device)
+    q_sampled = torch.zeros(actual_pairs, head_dim, device=device)
+    
+    for p in range(actual_pairs):
+        j1, j2 = idx1[p].item(), idx2[p].item()
+        if j1 == j2:
+            j2 = (j2 + 1) % N
+        _, U, _ = plane_projector_and_basis(K[j1], K[j2])
+        U_list[p] = U
+        q_sampled[p] = Q[j1]
     
     return U_list, q_sampled

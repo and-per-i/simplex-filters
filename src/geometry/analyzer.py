@@ -322,6 +322,161 @@ def analyze_checkpoint(
     return results
 
 
+def analyze_llama_pure(
+    model_name: str = "meta-llama/Llama-3.1-8B",
+    simplicial_indices: List[int] = [16, 20, 24, 28],
+    num_analysis_batches: int = 5,
+    seq_length: int = 256,
+    device: str = "cuda",
+    verbose: bool = True,
+) -> Dict:
+    """
+    Analisi geometrica di LLaMA puro (nessuna conversione).
+    Baseline reale per confronto con GramDet/trilineare.
+    
+    Carica LLaMA base, registra hook su k_proj/q_proj standard,
+    estrae coppie (K, K) da posizioni diverse, calcola metriche Grassmanniane.
+    
+    Args:
+        model_name: nome del modello
+        simplicial_indices: indici dei layer da analizzare
+        num_analysis_batches: batch da processare
+        seq_length: lunghezza sequenza
+        device: device
+        verbose: verbosità
+        
+    Returns:
+        dict con risultati per ogni layer
+    """
+    from datasets import load_dataset
+    import os
+    from src.geometry.hooks import ActivationSaver, batch_to_planes_llama_pure
+    
+    model_device_map = None if device == "cpu" else device
+    
+    if verbose:
+        print(f"\nFASE 1/3: Caricamento modello LLaMA base da {model_name}")
+    
+    model_dtype = torch.bfloat16
+    hf_token = os.environ.get("HF_TOKEN")
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        torch_dtype=model_dtype,
+        device_map=model_device_map,
+        attn_implementation="eager",
+        token=hf_token,
+    )
+    model.eval()
+    
+    num_heads = model.config.num_attention_heads
+    head_dim = model.config.hidden_size // model.config.num_attention_heads
+    kv_heads = getattr(model.config, "num_key_value_heads", num_heads // 4)
+    
+    if verbose:
+        print(f"  Teste: {num_heads}, head_dim: {head_dim}, kv_heads: {kv_heads}")
+    
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer.pad_token = tokenizer.eos_token
+    
+    # Dataset
+    wikitext_local = "./data/wikitext_test"
+    if os.path.exists(wikitext_local):
+        if verbose:
+            print(f"  Dataset di analisi da disco: {wikitext_local}")
+        from datasets import load_from_disk
+        dataset = load_from_disk(wikitext_local)
+    else:
+        if verbose:
+            print(f"  Dataset di analisi da HF: Salesforce/wikitext")
+        dataset = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
+    
+    results = {}
+    
+    for layer_idx in simplicial_indices:
+        if verbose:
+            print(f"\n  Layer {layer_idx}:")
+        
+        all_U = []
+        all_q = []
+        
+        for batch_idx in range(num_analysis_batches):
+            texts = []
+            for _ in range(2):
+                try:
+                    texts.append(next(iter(dataset))["text"][:seq_length*4])
+                except StopIteration:
+                    break
+            if not texts:
+                break
+            
+            enc = tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=seq_length)
+            input_ids = enc["input_ids"].to(device)
+            
+            saver = ActivationSaver(model, simplicial_indices)
+            saver.register_llama_hooks()
+            
+            with torch.no_grad():
+                model(input_ids)
+            
+            activations = saver.get_data()
+            saver.remove_hooks()
+            
+            U_list, q_vectors = batch_to_planes_llama_pure(
+                activations, layer_idx, num_heads, head_dim, kv_heads, device, num_pairs=500,
+            )
+            all_U.append(U_list)
+            all_q.append(q_vectors)
+        
+        if not all_U:
+            continue
+        
+        U_all = torch.cat(all_U, dim=0)
+        q_all = torch.cat(all_q, dim=0)
+        N = U_all.shape[0]
+        
+        if verbose:
+            print(f"    Totale vettori: {N}")
+        
+        U_mean, P_mean = frechet_mean_planes(U_all, n_iter=10, verbose=verbose)
+        var_g, distances = geodesic_variance(U_all, U_mean)
+        q_mean = q_filters_query_mean(q_all)
+        proj_norm, angle_from_normal, angle_from_plane = query_plane_relation(q_mean, U_mean)
+        query_dist = analyze_query_distribution(q_all, U_mean)
+        
+        angle_fp_deg = angle_from_plane.item() * 180 / 3.14159
+        
+        results[layer_idx] = {
+            "num_vectors": N,
+            "U_mean": U_mean.cpu(),
+            "P_mean": P_mean.cpu(),
+            "geodesic_variance": var_g.item(),
+            "geodesic_distances": distances.cpu(),
+            "q_mean": q_mean.cpu(),
+            "query_plane_proj_norm": proj_norm.item(),
+            "query_angle_from_plane_deg": angle_fp_deg,
+            "query_sigma1": query_dist["query_sigma1"],
+            "query_sigma2": query_dist["query_sigma2"],
+            "query_anisotropy_ratio": query_dist["query_anisotropy_ratio"],
+        }
+        
+        baseline = GRASSMANN_BASELINE.get(head_dim, None)
+        if baseline:
+            reduction_pct = (baseline - var_g.item()) / baseline * 100
+            results[layer_idx]["baseline_variance"] = baseline
+            results[layer_idx]["reduction_pct"] = round(reduction_pct, 1)
+        
+        if verbose:
+            print(f"    Varianza geodesica:  {var_g.item():.6f}")
+            if baseline:
+                print(f"    Baseline random:     {baseline:.4f} (Gr(2,{head_dim}))")
+                print(f"    Riduzione vs random: {reduction_pct:.1f}%")
+            print(f"    ||P q̄||:            {proj_norm.item():.6f}")
+            print(f"    q̄ dal piano:         {angle_fp_deg:.1f}°")
+            print(f"    σ1/σ2 (anisotropia): {query_dist['query_anisotropy_ratio']:.2f}")
+    
+    return results
+
+
 def summarize_results(results: Dict):
     """Stampa un riepilogo dei risultati di analisi."""
     print("\n" + "="*60)
