@@ -305,7 +305,8 @@ def run_tests(levels, verbose=False, stop_on_failure=False, model_name="random",
 # Step 5: Analisi geometrica
 # ==========================================================================
 
-def run_analysis(checkpoint_path: str, verbose: bool = False, device: str = "cuda", attention_type: str = "simplicial"):
+def run_analysis(checkpoint_path: str, verbose: bool = False, device: str = "cuda", attention_type: str = "simplicial",
+                 model_name: str = "meta-llama/Llama-3.1-8B", simplicial_indices: list = [16, 20, 24, 28]):
     """
     Esegue l'analisi geometrica completa su un checkpoint addestrato.
     """
@@ -316,6 +317,8 @@ def run_analysis(checkpoint_path: str, verbose: bool = False, device: str = "cud
     print(f"\n{BOLD}{'=' * 60}{NC}")
     print(f"{BOLD}  ANALISI GEOMETRICA{NC}")
     print(f"{BOLD}  Checkpoint: {abs_path}{NC}")
+    print(f"{BOLD}  Modello: {model_name}{NC}")
+    print(f"{BOLD}  Layer simpliciali: {simplicial_indices}{NC}")
     print(f"{BOLD}  Attention type: {attention_type}{NC}")
     print(f"{BOLD}  Device: {device}{NC}")
     print(f"{BOLD}{'=' * 60}{NC}\n")
@@ -327,6 +330,8 @@ def run_analysis(checkpoint_path: str, verbose: bool = False, device: str = "cud
         results = analyze_checkpoint(
             checkpoint_path=abs_path,
             attention_type=attention_type,
+            base_model_path=model_name,
+            simplicial_indices=simplicial_indices,
             num_analysis_batches=5,
             seq_length=256,
             device=device,
@@ -335,6 +340,8 @@ def run_analysis(checkpoint_path: str, verbose: bool = False, device: str = "cud
         summarize_results(results)
         return 0
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print_err(f"Analisi geometrica fallita: {e}")
         return 1
 
@@ -578,7 +585,7 @@ def main():
         run_finetuning(args, model_name, simplicial_indices, output_subdir="trilinear")
 
         ckpt_path = os.path.abspath(os.path.join(".", "trilinear", "final"))
-        run_analysis(ckpt_path, verbose=args.verbose)
+        run_analysis(ckpt_path, verbose=args.verbose, model_name=model_name, simplicial_indices=simplicial_indices)
         run_test_checkpoint(ckpt_path, "trilinear", verbose=args.verbose)
         free_gpu_memory()
 
@@ -589,7 +596,7 @@ def main():
         run_finetuning(args, model_name, simplicial_indices, output_subdir="gram_det")
 
         ckpt_path_gd = os.path.abspath(os.path.join(".", "gram_det", "final"))
-        run_analysis(ckpt_path_gd, verbose=args.verbose)
+        run_analysis(ckpt_path_gd, verbose=args.verbose, model_name=model_name, simplicial_indices=simplicial_indices)
         run_test_checkpoint(ckpt_path_gd, "gram_det", verbose=args.verbose)
         free_gpu_memory()
 
@@ -605,6 +612,8 @@ def main():
             verbose=args.verbose,
             device=device,
             attention_type=args.attention_type,
+            model_name=model_name,
+            simplicial_indices=simplicial_indices,
         )
 
     # ======================================================================

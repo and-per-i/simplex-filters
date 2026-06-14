@@ -70,8 +70,8 @@ def analyze_checkpoint(
     attention_type: str = "simplicial",
     base_model_path: str = "meta-llama/Llama-3.1-8B",
     simplicial_indices: List[int] = [16, 20, 24, 28],
-    num_heads: int = 32,
-    head_dim: int = 128,
+    num_heads: Optional[int] = None,
+    head_dim: Optional[int] = None,
     num_analysis_batches: int = 10,
     seq_length: int = 512,
     device: str = "cuda",
@@ -83,8 +83,10 @@ def analyze_checkpoint(
     Args:
         checkpoint_path: path al checkpoint
         attention_type: "simplicial" o "gram_det"
+        base_model_path: nome o path del modello LLaMA
         simplicial_indices: indici dei layer simpliciali
-        num_heads, head_dim: architettura modello
+        num_heads: numero di teste (se None, derivato dal config base_model_path)
+        head_dim: dimensione per testa (se None, derivato dal config base_model_path)
         num_analysis_batches: numero di batch da analizzare
         seq_length: lunghezza sequenza per analisi
         device: device
@@ -95,6 +97,29 @@ def analyze_checkpoint(
     """
     from datasets import load_dataset
     import os
+    import json
+    
+    # Se num_heads/head_dim non specificati, deriva dal config.json del modello
+    if num_heads is None or head_dim is None:
+        config_path = os.path.join(os.path.dirname(checkpoint_path), "..", "..", "config.json")
+        if not os.path.exists(config_path):
+            # Prova a cercare nella directory base
+            for try_path in [
+                os.path.join(os.path.dirname(checkpoint_path), "config.json"),
+                os.path.join(os.path.expanduser("~/.cache/huggingface/hub"), base_model_path.replace("/", "_"), "config.json"),
+            ]:
+                if os.path.exists(try_path):
+                    config_path = try_path
+                    break
+        if os.path.exists(config_path):
+            with open(config_path) as f:
+                cfg = json.load(f)
+            if num_heads is None:
+                num_heads = cfg.get("num_attention_heads", 32)
+            if head_dim is None:
+                hidden_size = cfg.get("hidden_size", 4096)
+                n_heads = cfg.get("num_attention_heads", 32)
+                head_dim = hidden_size // n_heads
     
     # device="cpu" → device_map=None (device_map non accetta "cpu" come stringa)
     model_device_map = None if device == "cpu" else device
