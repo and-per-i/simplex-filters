@@ -21,8 +21,8 @@ val_samples: 500
 max_steps: 3000
 start_step: 0
 baseline_ppl: 28.95
-per_device_batch_size: 4
-gradient_accumulation_steps: 4
+per_device_batch_size: 1
+gradient_accumulation_steps: 16
 warmup_steps: 100
 early_stop_ppl: 0
 max_perplexity_gap: 0
