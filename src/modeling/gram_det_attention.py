@@ -181,10 +181,11 @@ class GramDetAttention(nn.Module):
             win_size = k_windows.shape[3]
             total_pos = B * H * N
             
+            mask_dtype = x.dtype  # matcha il dtype di input (es. bfloat16) per non upcastare tutto
             if strategy == "qfilter":
                 from src.kv_cache.qfilter_score import qfilter_score_orthogonal
                 # Crea maschera: 1 = preserva, 0 = elimina
-                mask = torch.zeros(B, H, N, win_size, 1, device=x.device)
+                mask = torch.zeros(B, H, N, win_size, 1, device=x.device, dtype=mask_dtype)
                 for b in range(B):
                     for h in range(H):
                         for n_ in range(N):
@@ -199,14 +200,14 @@ class GramDetAttention(nn.Module):
                 # random eviction: stessa maschera per tutte le posizioni
                 max_survive = max(1, int(win_size * budget))
                 rand_ids = torch.randperm(win_size, device=x.device)[:max_survive]
-                mask = torch.zeros(win_size, 1, device=x.device)
+                mask = torch.zeros(win_size, 1, device=x.device, dtype=mask_dtype)
                 mask[rand_ids] = 1.0
                 k_windows = k_windows * mask.reshape(1, 1, 1, -1, 1)
                 v_windows = v_windows * mask.reshape(1, 1, 1, -1, 1)
             elif strategy == "fifo":
                 # FIFO: tieni le prime B% chiavi (le piu' recenti nella finestra)
                 max_survive = max(1, int(win_size * budget))
-                mask = torch.zeros(win_size, 1, device=x.device)
+                mask = torch.zeros(win_size, 1, device=x.device, dtype=mask_dtype)
                 mask[-max_survive:] = 1.0  # ultime = piu' recenti
                 k_windows = k_windows * mask.reshape(1, 1, 1, -1, 1)
                 v_windows = v_windows * mask.reshape(1, 1, 1, -1, 1)
