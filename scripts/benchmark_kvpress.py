@@ -47,7 +47,9 @@ BUDGETS = [1.0, 0.5, 0.3, 0.1]
 def compute_U_mean_llama(gramdet_mode=False, gram_window=8):
     """Calcola U_mean su LLaMA puro o su GramDet (se gramdet_mode)."""
     if gramdet_mode:
-        print(f"Calcolo U_mean su modello GramDet step 0 (W={gram_window})...")
+        # Usa sequenze corte per il calcolo di U_mean (risparmio memoria con W grande)
+        u_mean_seq_len = 128
+        print(f"Calcolo U_mean su modello GramDet step 0 (W={gram_window}, N={u_mean_seq_len})...")
         # Carica e converti
         model = AutoModelForCausalLM.from_pretrained(
             MODEL, torch_dtype=DTYPE, device_map=DEVICE,
@@ -84,11 +86,11 @@ def compute_U_mean_llama(gramdet_mode=False, gram_window=8):
             for _ in range(5):
                 texts = []
                 while len(texts) < 2 and text_cursor < len(all_texts):
-                    texts.append(all_texts[text_cursor][:SEQ_LEN*4])
+                    texts.append(all_texts[text_cursor][:u_mean_seq_len*4])
                     text_cursor += 1
                 if not texts:
                     break
-                enc = tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=SEQ_LEN)
+                enc = tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=u_mean_seq_len)
                 input_ids = enc["input_ids"].to(DEVICE)
                 saver = ActivationSaver(model, INDICES, "gram_det")
                 saver.register_hooks()
