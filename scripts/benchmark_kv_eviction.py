@@ -15,7 +15,7 @@ Usage:
 
 import os, sys, math, gc
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache
 from datasets import load_dataset
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -75,32 +75,55 @@ def get_model_and_tokenizer():
     return model, tokenizer
 
 
-def apply_eviction_to_past(past_key_values, U_mean, budget, strategy):
+def get_cache_kv(cache, layer_idx):
     """
-    Applica eviction al KV cache sui layer selezionati.
+    Legge K,V da un DynamicCache gestendo le differenze API tra versioni transformers.
     
-    past_key_values: tuple of tuple (K, V) per ogni layer
-      K: [1, num_heads, seq_len, head_dim]
+    API standard (transformers >= 4.45):
+        past.key_cache[layer_idx], past.value_cache[layer_idx]
     
-    Restituisce past_key_values modificato.
+    API transformers 5.x (DynamicLayer):
+        past.layers[layer_idx].keys, past.layers[layer_idx].values
+    """
+    if hasattr(cache, 'key_cache'):
+        return cache.key_cache[layer_idx], cache.value_cache[layer_idx]
+    elif hasattr(cache, 'layers'):
+        layer = cache.layers[layer_idx]
+        if hasattr(layer, 'keys') and hasattr(layer, 'values'):
+            return layer.keys, layer.values
+        raise AttributeError(f"DynamicCache.layers[{layer_idx}] type={type(layer).__name__}: no keys/values")
+    else:
+        raise AttributeError(f"DynamicCache type={type(cache).__name__}: no key_cache or layers")
+
+
+def apply_eviction_to_cache(cache, U_mean, budget, strategy, num_layers):
+    """
+    Legge K,V dal DynamicCache originale, applica eviction, restituisce nuovo DynamicCache.
+    
+    cache: DynamicCache (output del forward con use_cache=True)
+    U_mean: piano medio Grassmanniano [head_dim, k=2]
+    budget: frazione [0,1]
+    strategy: 'qfilter' | 'random' | 'fifo'
+    num_layers: numero totale di layer del modello
+    
+    Restituisce: nuovo DynamicCache con K,V filtrati
     """
     import math as _math
     
-    new_past = []
-    for layer_idx in range(len(past_key_values)):
-        k, v = past_key_values[layer_idx]
+    new_cache = DynamicCache()
+    
+    for layer_idx in range(num_layers):
+        k, v = get_cache_kv(cache, layer_idx)
         
         if layer_idx not in LAYERS_EVICT or budget == 1.0:
-            # Layer non selezionato: KV cache intatto
-            new_past.append((k, v))
+            new_cache.update(k, v, layer_idx)
             continue
         
         num_heads = k.shape[1]
         head_dim = k.shape[-1]
         seq_len = k.shape[2]
-        B = max(1, int(_math.ceil(seq_len * budget)))  # arrotonda per eccesso
         
-        # Appiattisci teste per scoring: [num_heads * seq_len, head_dim]
+        # Appiattisci tutte le teste per scoring: [H*S, d]
         k_flat = k.squeeze(0).transpose(0, 1).reshape(-1, head_dim)  # [H*S, d]
         
         if strategy == "qfilter":
@@ -109,32 +132,32 @@ def apply_eviction_to_past(past_key_values, U_mean, budget, strategy):
         elif strategy == "random":
             keep_ids = random_indices(k_flat.shape[0], budget)
         elif strategy == "fifo":
-            # FIFO: tieni le ultime B su H*S (le più recenti per ogni testa)
-            k_flat = k.squeeze(0).transpose(0, 1)  # [H, S, d]
+            # FIFO: per ogni testa, tieni le ultime B posizioni
+            k_t = k.squeeze(0).transpose(0, 1)  # [H, S, d]
             max_survive = max(1, int(seq_len * budget))
-            # Per ogni testa, prendi le ultime 'max_survive' posizioni
-            k_new = k_flat[:, -max_survive:, :]  # [H, B', d]
+            k_new = k_t[:, -max_survive:, :]  # [H, B', d]
             v_new = v.squeeze(0).transpose(0, 1)[:, -max_survive:, :]
-            new_past.append((
+            new_cache.update(
                 k_new.transpose(0, 1).unsqueeze(0),  # [1, H, B', d]
                 v_new.transpose(0, 1).unsqueeze(0),
-            ))
+                layer_idx,
+            )
             continue
         
-        # Ricostruisci K, V dagli keep_ids
-        keep_ids = keep_ids.to(k.device)
-        k_new = k_flat[keep_ids]  # [B, d]
+        # Ricostruisci dagli keep_ids
+        keep_ids = keep_ids.to(k.device).long()
+        k_new = k_flat[keep_ids]  # [B', d]
         v_new = v.squeeze(0).transpose(0, 1).reshape(-1, head_dim)[keep_ids]
         
-        # Ricostruisci: [1, H, B', d] dove B' = numero sopravvissuti
-        k_new = k_new.T.unsqueeze(0)  # [1, d, B] → serve [1, H, B_per_head, d]
-        # Raggruppa per testa
+        # Raggruppa per testa: [1, H, B_per_head, d]
+        k_new = k_new.T.unsqueeze(0)  # [1, d, B']
+        v_new = v_new.T.unsqueeze(0)  # [1, d, B']
         k_new = k_new.view(1, num_heads, -1, head_dim)
-        v_new = v_new.T.unsqueeze(0).view(1, num_heads, -1, head_dim)
+        v_new = v_new.view(1, num_heads, -1, head_dim)
         
-        new_past.append((k_new, v_new))
+        new_cache.update(k_new, v_new, layer_idx)
     
-    return tuple(new_past)
+    return new_cache
 
 
 def run_benchmark():
@@ -169,6 +192,7 @@ def run_benchmark():
     # Ora carica modello e U_mean
     U_mean = compute_U_mean_llama()
     model, tokenizer = get_model_and_tokenizer()
+    num_layers = model.config.num_hidden_layers
     
     sequences = []
     for i in range(NUM_SEQUENCES):
@@ -176,7 +200,6 @@ def run_benchmark():
         if len(chunk) == SEQ_LEN:
             sequences.append(torch.tensor(chunk, dtype=torch.long))
         else:
-            # Padding con zeros
             chunk = chunk + [0] * (SEQ_LEN - len(chunk))
             sequences.append(torch.tensor(chunk[:SEQ_LEN], dtype=torch.long))
     
@@ -190,7 +213,6 @@ def run_benchmark():
     print(headers)
     print("-" * 48)
     
-    total_tokens = 0
     results = {s: {"qfilter": [], "random": [], "fifo": []} for s in BUDGETS}
     
     for budget in BUDGETS:
@@ -203,84 +225,25 @@ def run_benchmark():
             with torch.no_grad():
                 # Forward prefisso con past_key_values
                 outputs = model(prefix, use_cache=True)
-                past = outputs.past_key_values
-                
-                # DynamicCache → tuple of tuple per compatibilità
-                past_type_name = type(past).__name__
-                if past_type_name == 'DynamicCache':
-                    # DynamicCache: prova tutti i pattern di accesso noti
-                    converted = False
-                    
-                    # Pattern 1: accesso tramite past.layers (transformers 4.37+ / 5.x)
-                    if hasattr(past, 'layers') and past.layers:
-                        try:
-                            layer0 = past.layers[0]
-                            if hasattr(layer0, 'key_cache') and hasattr(layer0, 'value_cache'):
-                                # transformers 4.x (DynamicCacheLayer)
-                                past = tuple((layer.key_cache, layer.value_cache) for layer in past.layers)
-                                converted = True
-                            elif hasattr(layer0, 'keys') and hasattr(layer0, 'values'):
-                                # transformers 5.x (DynamicLayer)
-                                past = tuple((layer.keys, layer.values) for layer in past.layers)
-                                converted = True
-                        except Exception as e:
-                            print(f"  Pattern layers fallito: {e}")
-                    
-                    if not converted:
-                        try:
-                            # Pattern 2: key_cache/ value_cache come proprietà del DynamicCache
-                            past = tuple(zip(past.key_cache, past.value_cache))
-                            converted = True
-                        except (AttributeError, TypeError):
-                            pass
-                    
-                    if not converted:
-                        try:
-                            # Pattern 3: to_legacy_cache()
-                            past = past.to_legacy_cache()
-                            converted = True
-                        except (AttributeError, TypeError):
-                            pass
-                    
-                    if not converted:
-                        try:
-                            # Pattern 4: attributi privati _key_cache / _value_cache
-                            past = tuple(zip(past._key_cache, past._value_cache))
-                            converted = True
-                        except (AttributeError, TypeError):
-                            pass
-                    
-                    if not converted:
-                        # Pattern 5: stampa diagnostica dettagliata
-                        print(f"ERROR: impossibile convertire {past_type_name}", flush=True)
-                        print(f"  Attributi DynamicCache: {[a for a in dir(past) if not a.startswith('__')]}", flush=True)
-                        if hasattr(past, 'layers') and past.layers:
-                            layer0 = past.layers[0]
-                            print(f"  Tipo layer0: {type(layer0).__name__}", flush=True)
-                            print(f"  Attributi layer0: {[a for a in dir(layer0) if not a.startswith('__')]}", flush=True)
-                        raise RuntimeError(f"Impossibile convertire DynamicCache ({past_type_name})")
-                elif hasattr(past, 'to_legacy_cache'):
-                    past = past.to_legacy_cache()
+                cache = outputs.past_key_values  # DynamicCache
                 
                 for strategy in ["qfilter", "random", "fifo"]:
                     if budget == 1.0 and strategy != "qfilter":
-                        continue  # idem, salta
-                    past_filtered = apply_eviction_to_past(past, U_mean, budget, strategy)
+                        continue
                     
-                    # Forward suffisso con KV ridotto
-                    out_suffix = model(suffix, past_key_values=past_filtered)
+                    cache_filtered = apply_eviction_to_cache(
+                        cache, U_mean, budget, strategy, num_layers
+                    )
+                    
+                    # Forward suffisso con KV ridotto (DynamicCache)
+                    out_suffix = model(suffix, past_key_values=cache_filtered)
                     logits = out_suffix.logits
                     loss_fct = torch.nn.CrossEntropyLoss()
                     shift_logits = logits[:, :-1, :].reshape(-1, logits.shape[-1])
                     shift_labels = suffix[:, 1:].reshape(-1)
                     loss = loss_fct(shift_logits, shift_labels)
                     
-                    if strategy == "qfilter":
-                        results[budget]["qfilter"].append(loss.item())
-                    elif strategy == "random":
-                        results[budget]["random"].append(loss.item())
-                    elif strategy == "fifo":
-                        results[budget]["fifo"].append(loss.item())
+                    results[budget][strategy].append(loss.item())
         
         # Stampa riga
         qf_avg = sum(results[budget]["qfilter"]) / len(results[budget]["qfilter"])
