@@ -407,7 +407,8 @@ def analyze_llama_pure(
         print(f"  Teste: {num_heads}, head_dim: {head_dim}, kv_heads: {kv_heads}")
     
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    tokenizer.pad_token = tokenizer.eos_token if tokenizer.eos_token is not None else tokenizer.pad_token
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token if tokenizer.eos_token is not None else '[PAD]'
     
     # Dataset
     wikitext_local = "./data/wikitext_test"
