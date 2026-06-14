@@ -407,13 +407,15 @@ def analyze_llama_pure(
         print(f"  Teste: {num_heads}, head_dim: {head_dim}, kv_heads: {kv_heads}")
     
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    if tokenizer.pad_token is None:
+    if tokenizer.pad_token is None or tokenizer.pad_token_id is None:
         if tokenizer.eos_token is not None:
             tokenizer.pad_token = tokenizer.eos_token
+            tokenizer.pad_token_id = tokenizer.eos_token_id
         else:
             # Qwen2.5: no eos_token, no pad_token → usa <|endoftext|>
             tokenizer.pad_token = "<|endoftext|>"
             tokenizer.eos_token = "<|endoftext|>"
+            tokenizer.pad_token_id = tokenizer.convert_tokens_to_ids("<|endoftext|>")
     
     # Dataset
     wikitext_local = "./data/wikitext_test"
