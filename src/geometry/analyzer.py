@@ -97,29 +97,6 @@ def analyze_checkpoint(
     """
     from datasets import load_dataset
     import os
-    import json
-    
-    # Se num_heads/head_dim non specificati, deriva dal config.json del modello
-    if num_heads is None or head_dim is None:
-        config_path = os.path.join(os.path.dirname(checkpoint_path), "..", "..", "config.json")
-        if not os.path.exists(config_path):
-            # Prova a cercare nella directory base
-            for try_path in [
-                os.path.join(os.path.dirname(checkpoint_path), "config.json"),
-                os.path.join(os.path.expanduser("~/.cache/huggingface/hub"), base_model_path.replace("/", "_"), "config.json"),
-            ]:
-                if os.path.exists(try_path):
-                    config_path = try_path
-                    break
-        if os.path.exists(config_path):
-            with open(config_path) as f:
-                cfg = json.load(f)
-            if num_heads is None:
-                num_heads = cfg.get("num_attention_heads", 32)
-            if head_dim is None:
-                hidden_size = cfg.get("hidden_size", 4096)
-                n_heads = cfg.get("num_attention_heads", 32)
-                head_dim = hidden_size // n_heads
     
     # device="cpu" → device_map=None (device_map non accetta "cpu" come stringa)
     model_device_map = None if device == "cpu" else device
@@ -150,6 +127,14 @@ def analyze_checkpoint(
         token=hf_token,
     )
     model.train()
+    
+    # Deriva num_heads / head_dim dal modello appena caricato (sempre disponibile)
+    if num_heads is None:
+        num_heads = model.config.num_attention_heads
+    if head_dim is None:
+        head_dim = model.config.hidden_size // model.config.num_attention_heads
+    if verbose:
+        print(f"  Teste: {num_heads}, head_dim: {head_dim}")
     
     # ================================================================
     # FASE 2: Converti in ibrido (crea i layer SimplicialAttention)
