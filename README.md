@@ -98,13 +98,13 @@ Ogni chiave kⱼ è un vettore in ℝᵈ. Due chiavi (kⱼ₁, kⱼ₂) definisc
 
 | Dataset | Varianza geodesica | Riduzione vs random |
 |---|---|---|
-| Random Haar | 4.09 | — |
+| Random Haar Gr(2,64) | 3.85 | — |
 | Wikitext | 2.14-2.55 | **38-48%** |
 | C4 | 2.14-2.50 | **38-49%** |
 
 La struttura è **marginale** (non relazionale): ogni chiave individuale ha una posizione preferita nello spazio, indipendentemente dalle altre. Lo shuffle test (mescolamento delle coppie) produce varianza identica all'originale (ratio ≈ 1.0×).
 
-**Cross-model robustness**: Qwen 2.5 7B mostra pattern simile (varianza 2.24-2.58), confermando che non è artefatto di un modello specifico.
+**Cross-model robustness**: Qwen 2.5-0.5B mostra pattern simile (varianza 2.24-2.58), confermando che non è artefatto di un modello specifico. La struttura non dipende dalla scala: LLaMA 3.1 8B (Gr(2,128), baseline 4.09) mostra varianza 2.34-2.52, LLaMA 3.2 1B mostrano valori proporzionali.
 
 ### 4. KV Cache Eviction Benchmark (kvpress)
 
@@ -173,11 +173,11 @@ La struttura geometrica è **robusta cross-dataset**: varianza geodesica ±0.1 t
 ### 6. Cross-model analysis
 
 ```bash
-python scripts/analyze_qwen.py  # Qwen 2.5 7B
-python scripts/analyze_olmo.py  # OLMo 2 7B
+python scripts/analyze_qwen.py  # Qwen2.5-0.5B (QKV bias, struttura alterata)
+python scripts/analyze_olmo.py  # OLMo 2 7B (QK-norm, nessuna struttura)
 ```
 
-Supporto automatico per diverse architetture (GQA, MHA, RoPE, etc.).
+Supporto automatico per diverse architetture (GQA, MHA, RoPE, etc.). **Criterio predittivo**: varianza geodesica ≥30% sotto random → compatibile con eviction Q-filters style. OLMo (QK-norm) non compatibile, Qwen (bias QKV) struttura alterata.
 
 ### 7. Baseline Monte Carlo per Grassmanniana
 
@@ -243,7 +243,7 @@ simplex-filters/
 | **GramDet crea più struttura del trilineare** | Varianza 2.34 vs 3.1 |
 | **Q-filter ortogonale è il proxy corretto** | Spearman ρ=+0.61 per GramDet |
 | **QFilterPress domina su LLaMA standard** | PPL 14.38 vs 363.90 al 10% budget |
-| **GrassmannianPress funziona su GramDet** | Δ PPL +0.51 vs random al 10% |
+| **GrassmannianPress su GramDet step 0** | Segnale non robusto — differenze nell'ordine del rumore statistico (Δ PPL 0.02-0.51) |
 
 ## Citazione
 
