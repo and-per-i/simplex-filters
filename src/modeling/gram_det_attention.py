@@ -184,16 +184,33 @@ class GramDetAttention(nn.Module):
             mask_dtype = x.dtype  # matcha il dtype di input (es. bfloat16) per non upcastare tutto
             if strategy == "qfilter":
                 from src.kv_cache.qfilter_score import qfilter_score_orthogonal
-                # Crea maschera: 1 = preserva, 0 = elimina
+                # Crea maschera vettorizzata: [B, H, N, win_size, d] → [B, H, N, win_size]
+                # Proiettore sul piano medio
+                P = U_mean @ U_mean.T  # [d, d]
+                # Componente ortogonale per TUTTE le posizioni in un matmul: k_windows @ P
+                P_cast = P.to(k_windows.dtype).to(k_windows.device)
+                k_proj = k_windows @ P_cast  # [B, H, N, win_size, d]
+                k_orth = k_windows - k_proj
+                scores = torch.norm(k_orth, dim=-1)  # [B, H, N, win_size]
+                
+                # Top-k per ogni posizione: [B, H, N, max_survive]
+                max_survive = max(1, int(win_size * budget))
+                _, top_ids = torch.topk(scores, max_survive, dim=-1, sorted=False)
+                
+                # Crea maschera da indici
                 mask = torch.zeros(B, H, N, win_size, 1, device=x.device, dtype=mask_dtype)
-                for b in range(B):
-                    for h in range(H):
-                        for n_ in range(N):
-                            keys_window = k_windows[b, h, n_]  # [win_size, d]
-                            scores = qfilter_score_orthogonal(keys_window, U_mean)
-                            max_survive = max(1, int(win_size * budget))
-                            _, top_ids = torch.topk(scores, max_survive)
-                            mask[b, h, n_, top_ids] = 1.0
+                # top_ids: [B, H, N, max_survive] → espandi per scatter
+                # Occorre indicizzare con b, h, n, top_ids[b, h, n, :]
+                if B == 1 and H == 1:
+                    # Caso comune: batch e head singoli
+                    mask[0, 0, :, top_ids[0, 0]] = 1.0
+                else:
+                    # Caso generale: usa scatter_ su win_size
+                    batch_idx = torch.arange(B, device=x.device)[:, None, None, None].expand(B, H, N, max_survive)
+                    head_idx = torch.arange(H, device=x.device)[None, :, None, None].expand(B, H, N, max_survive)
+                    seq_idx = torch.arange(N, device=x.device)[None, None, :, None].expand(B, H, N, max_survive)
+                    mask[batch_idx, head_idx, seq_idx, top_ids] = 1.0
+                
                 k_windows = k_windows * mask
                 v_windows = v_windows * mask
             elif strategy == "random":
