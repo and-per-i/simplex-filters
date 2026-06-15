@@ -20,7 +20,7 @@ L'attenzione standard dei Transformer è un **prodotto scalare** tra query Q e k
 
 La versione **GramDet** ha un'interpretazione geometrica diretta: più il determinante è alto, più i tre vettori sono linearmente indipendenti — e quindi trasportano informazione complementare.
 
-**Scoperta chiave**: la struttura geometrica (piani di Fréchet) non è solo un artefatto del training 2-simpliciale — esiste già, in forma latente, nei **key vectors di LLaMA 3.1/3.2 standard**, con varianza geodesica 38-47% inferiore al caso casuale.
+**Contributo centrale**: LLaMA possiede **struttura Grassmanniana latente** su Gr(2,d) — i piani generati dalle coppie di key vectors hanno varianza geodesica 30-38% inferiore a un campione random di Haar, dimostrando che lo spazio delle chiavi non è isotropo ma ha geometria intrinseca. Questa struttura è robusta cross-dataset (Wikitext, C4) e cross-scala (1B, 8B), ed è predittiva della compatibilità con eviction Q-filters style.
 
 ---
 
