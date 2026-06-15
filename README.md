@@ -142,7 +142,24 @@ python scripts/benchmark_kvpress.py --gramdet --gram-window 32  # finestra 65 to
 | 30% | 29.17 | 29.24 |
 | 10% | 29.60 | 30.11 |
 
-Grassmann batte random a tutti i budget. Il segnale è piccolo (max Δ=0.51) ma sistematico — lo score ortogonale funzione correttamente per GramDet attention.
+Grassmann batte random a tutti i budget. Il segnale è piccolo (max Δ=0.51) e non robusto a variazioni di prefix/num_sequences — rientra nel rumore statistico per 10 sequenze.
+
+**Eviction selettiva per profondità**: validate_proxy ha rivelato un **gradiente netto shallow→deep** nella correlazione del proxy Grassmanniano su GramDet 1B step 0:
+
+| Layer | Spearman ρ | p-value |
+|---|---|---|
+| 8 | **-0.14** | 10⁻⁶ |
+| 10 | **-0.20** | 10⁻¹² |
+| 12 | **+0.10** | 10⁻⁴ |
+| 14 | **+0.31** | 10⁻³⁰ |
+
+I layer bassi (8-10) sono anti-correlati, i layer profondi (12-14) sono correlati positivamente (ρ fino a +0.31). Lo score funziona solo dove l'angolo query-piano è elevato. L'eviction selettiva è ottenibile con:
+
+```bash
+python scripts/benchmark_kvpress.py --gramdet --gram-window 32 --eviction-layers 12,14
+```
+
+Le differenze sono nell'ordine di 0.02-0.05 PPL — completamente dentro il rumore statistico. Il benchmark end-to-end su step 0 non ha dato risultati robusti. Questo va documentato onestamente: senza un modello GramDet genuinamente addestrato (da pretraining from scratch), il benchmark di eviction non è informativo.
 
 ### 5. Cross-dataset validation (Wikitext vs C4)
 
