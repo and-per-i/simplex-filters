@@ -298,25 +298,27 @@ def load_model(
     model_name: str,
     simplicial_indices: list,
     device: str = "cuda",
+    gram_window: int = 8,
 ):
     """Carica modello dal checkpoint con model_name e indici parametrizzati."""
     from safetensors.torch import load_file as safetensors_load
     from src.modeling.convert_to_hybrid import convert_llama_to_hybrid
     import glob
 
-    # 1. Carica state_dict
+    # 1. Carica state_dict (se non è step 0)
     ckpt_state = {}
-    safetensor_files = glob.glob(os.path.join(ckpt_path, "*.safetensors"))
-    if not safetensor_files:
-        idx_path = os.path.join(ckpt_path, "model.safetensors.index.json")
-        if os.path.exists(idx_path):
-            with open(idx_path) as f:
-                import json
-                ix = json.load(f)
-            safetensor_files = list(set(ix["weight_map"].values()))
-            safetensor_files = [os.path.join(ckpt_path, f) for f in safetensor_files]
-    for sf in safetensor_files:
-        ckpt_state.update(safetensors_load(sf))
+    if ckpt_path.lower() != "none":
+        safetensor_files = glob.glob(os.path.join(ckpt_path, "*.safetensors"))
+        if not safetensor_files:
+            idx_path = os.path.join(ckpt_path, "model.safetensors.index.json")
+            if os.path.exists(idx_path):
+                with open(idx_path) as f:
+                    import json
+                    ix = json.load(f)
+                safetensor_files = list(set(ix["weight_map"].values()))
+                safetensor_files = [os.path.join(ckpt_path, f) for f in safetensor_files]
+        for sf in safetensor_files:
+            ckpt_state.update(safetensors_load(sf))
 
     # 2. Carica LLaMA fresco
     model = AutoModelForCausalLM.from_pretrained(
@@ -337,7 +339,7 @@ def load_model(
         simplicial_indices=simplicial_indices,
         alpha=0.01, w1=32, w2=256,
         attention_type=attention_type,
-        gram_window=8,
+        gram_window=gram_window,
     )
 
     # 5. Copia pesi GramDet/Simplicial
@@ -367,6 +369,8 @@ def main():
                         help="Layer da analizzare (default: 28)")
     parser.add_argument("--seq-length", type=int, default=256)
     parser.add_argument("--num-batches", type=int, default=3)
+    parser.add_argument("--gram-window", type=int, default=8,
+                        help="Half-window per GramDet (default: 8)")
     parser.add_argument("--proxy-type", type=str, default="orthogonal",
                         choices=["projection", "orthogonal"],
                         help="Tipo di proxy (default: orthogonal)")
@@ -387,8 +391,8 @@ def main():
 
     # Carica modello
     print("Caricamento modello...", end=" ", flush=True)
-    model = load_model(args.ckpt, args.attention_type, args.model, simplicial_indices, device)
-    print(f"OK")
+    model = load_model(args.ckpt, args.attention_type, args.model, simplicial_indices, device, args.gram_window)
+    print(f"OK (W={args.gram_window})")
 
     # Deriva head_dim e num_q_heads dal model.config
     head_dim = getattr(model.config, "head_dim", None) or (
