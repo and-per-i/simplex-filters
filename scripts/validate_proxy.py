@@ -61,7 +61,13 @@ def compute_true_score(
     from src.geometry.hooks import ActivationSaver, extract_key_vectors
     from src.modeling.gram_det_attention import GramDetAttention
 
-    dataset = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
+    # Wikitext locale per ambienti con proxy restrittivi (Vast.ai)
+    wikitext_local = "./data/wikitext_test"
+    if os.path.exists(wikitext_local):
+        from datasets import load_from_disk
+        dataset = load_from_disk(wikitext_local)
+    else:
+        dataset = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="test", streaming=True)
     scale = 1.0 / math.sqrt(head_dim)
 
     if attention_type == "gram_det":
