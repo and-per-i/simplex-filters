@@ -223,13 +223,8 @@ def batch_to_planes(
     k2 = extract_key_vectors(activations, layer_idx, 'k2', num_heads, head_dim).to(device)
     q = extract_key_vectors(activations, layer_idx, 'q', num_heads, head_dim).to(device)
     
-    # Calcola piani per ogni coppia (k1_i, k2_i)
-    N = k1.shape[0]
-    U_list = torch.zeros(N, head_dim, 2, device=device)
-    
-    for i in range(N):
-        _, U, _ = plane_projector_and_basis(k1[i], k2[i])
-        U_list[i] = U
+    # Calcola piani vettorizzato: plane_projector_and_basis supporta batch
+    _, U_list, _ = plane_projector_and_basis(k1, k2)  # [N, d, 2]
     
     return U_list, q
 
@@ -267,30 +262,24 @@ def batch_to_planes_gram_det(
     Q = extract_key_vectors(activations, layer_idx, 'q', num_heads, head_dim).to(device)
     
     N = K.shape[0]
-    # Limita il numero di coppie a N (non di piu' — non abbiamo abbastanza token)
     actual_pairs = min(num_pairs, N, N * (N - 1) // 2)
     
     # Genera coppie (j1, j2) garantendo j1 ≠ j2 via permutazione + shift ciclico
     all_indices = torch.randperm(N, device=device)
-    idx1 = all_indices
-    idx2 = all_indices[(torch.arange(N, device=device) + N // 2) % N]
-    # Garantisce j1 != j2 anche quando N=1
+    idx1 = all_indices[:actual_pairs]
+    idx2 = all_indices[(torch.arange(actual_pairs, device=device) + N // 2) % N]
     if N > 1 and torch.all(idx1 == idx2):
-        idx2 = all_indices[(torch.arange(N, device=device) + N // 2 + 1) % N]
+        idx2 = all_indices[(torch.arange(actual_pairs, device=device) + N // 2 + 1) % N]
     
-    U_list = torch.zeros(actual_pairs, head_dim, 2, device=device)
-    q_sampled = torch.zeros(actual_pairs, head_dim, device=device)
+    # Estrai vettori K per le coppie: [actual_pairs, d]
+    k1_batch = K[idx1]
+    k2_batch = K[idx2]
     
-    for p in range(actual_pairs):
-        j1, j2 = idx1[p].item(), idx2[p].item()
-        if j1 == j2:
-            # Fallback: prendi il ciclo successivo
-            j2 = (j2 + 1) % N
-        _, U, _ = plane_projector_and_basis(K[j1], K[j2])
-        U_list[p] = U
-        q_sampled[p] = Q[j1]  # query associata al primo token della coppia
+    # Calcola piani vettorizzato: single call instead of loop
+    _, U_batch, _ = plane_projector_and_basis(k1_batch, k2_batch)  # [actual_pairs, d, 2]
+    q_sampled = Q[idx1]  # [actual_pairs, d]
     
-    return U_list, q_sampled
+    return U_batch, q_sampled
 
 
 def batch_to_planes_llama_pure(
@@ -330,20 +319,15 @@ def batch_to_planes_llama_pure(
     actual_pairs = min(num_pairs, N, N * (N - 1) // 2)
     
     all_indices = torch.randperm(N, device=device)
-    idx1 = all_indices
-    idx2 = all_indices[(torch.arange(N, device=device) + N // 2) % N]
+    idx1 = all_indices[:actual_pairs]
+    idx2 = all_indices[(torch.arange(actual_pairs, device=device) + N // 2) % N]
     if N > 1 and torch.all(idx1 == idx2):
-        idx2 = all_indices[(torch.arange(N, device=device) + N // 2 + 1) % N]
+        idx2 = all_indices[(torch.arange(actual_pairs, device=device) + N // 2 + 1) % N]
     
-    U_list = torch.zeros(actual_pairs, head_dim, 2, device=device)
-    q_sampled = torch.zeros(actual_pairs, head_dim, device=device)
+    # Costruzione piani vettorizzata
+    k1_batch = K[idx1]
+    k2_batch = K[idx2]
+    _, U_batch, _ = plane_projector_and_basis(k1_batch, k2_batch)  # [actual_pairs, d, 2]
+    q_sampled = Q[idx1]  # [actual_pairs, d]
     
-    for p in range(actual_pairs):
-        j1, j2 = idx1[p].item(), idx2[p].item()
-        if j1 == j2:
-            j2 = (j2 + 1) % N
-        _, U, _ = plane_projector_and_basis(K[j1], K[j2])
-        U_list[p] = U
-        q_sampled[p] = Q[j1]
-    
-    return U_list, q_sampled, K
+    return U_batch, q_sampled, K
