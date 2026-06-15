@@ -37,10 +37,10 @@ MODEL = "meta-llama/Llama-3.2-1B"
 INDICES = [8, 10, 12, 14]  # GramDet layer
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DTYPE = torch.bfloat16
-PREFIX_LEN = 256
+PREFIX_LEN = 512
 SUFFIX_LEN = 256
 SEQ_LEN = PREFIX_LEN + SUFFIX_LEN
-NUM_SEQUENCES = 10
+NUM_SEQUENCES = 100
 BUDGETS = [1.0, 0.5, 0.3, 0.1]
 
 
