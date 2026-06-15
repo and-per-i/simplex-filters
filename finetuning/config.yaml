@@ -28,10 +28,11 @@ gradient_accumulation_steps: 1
 warmup_steps: 100
 
 # Learning rates
-lr_k2v2: 5.0e-4           # 2.5x rispetto a prima — K2/V2 partono da random noise, gradiente debole
-lr_k1v1: 2.0e-5           # invariato — pesi pretrained, non vogliamo romperli
+lr_k2v2: 5.0e-5           # ridotto 10x — gradienti corretti dopo fix backward, lr=5e-4 diverge
+lr_k1v1: 2.0e-6           # ridotto 10x — speculare a k2v2
 lr_standard: 0             # 0 = freezing completo dei layer non-simpliciali
 weight_decay: 0.01
+max_grad_norm: 1.0        # gradient clipping — essenziale con backbone frozen
 beta1: 0.9
 beta2: 0.95
 

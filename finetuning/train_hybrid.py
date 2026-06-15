@@ -106,6 +106,7 @@ def _do_train(config: dict):
     lr_k1v1 = config["lr_k1v1"]
     lr_standard = config.get("lr_standard", 1e-5)
     weight_decay = config["weight_decay"]
+    max_grad_norm = config.get("max_grad_norm", 0.0)  # 0 = nessun clipping
     beta1 = config.get("beta1", 0.9)
     beta2 = config.get("beta2", 0.95)
     seq_length = config["seq_length"]
@@ -190,6 +191,8 @@ def _do_train(config: dict):
         loss.backward()
 
         if (batch_idx + 1) % gradient_accumulation_steps == 0:
+            if max_grad_norm > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
             optimizer.step()
             optimizer.zero_grad()
             scheduler.step()
