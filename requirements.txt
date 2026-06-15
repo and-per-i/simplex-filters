@@ -20,6 +20,9 @@ tqdm>=4.66.0
 # Test
 pytest>=8.0.0
 
+# Statistiche per validazione proxy (Pearson/Spearman)
+scipy>=1.10.0
+
 # KV cache eviction (NVIDIA)
 kvpress>=0.1.0
 
