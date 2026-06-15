@@ -28,7 +28,7 @@ except (ImportError, RuntimeError):
 _USE_TRITON = (
     _TRITON_AVAILABLE
     and torch.cuda.is_available()
-    and "H100" in torch.cuda.get_device_name(0)
+    and torch.cuda.get_device_capability()[0] >= 9
 )
 
 
@@ -147,36 +147,34 @@ class SimplicialAttentionFunction(torch.autograd.Function):
         w1: int,
         w2: int,
     ):
+        ctx.w1 = w1
+        ctx.w2 = w2
+        head_dim = xq.shape[-1]
+
         if _USE_TRITON:
             try:
                 output, max_plus_lse = triton_fwd(xq, xk1, xk2, xv1, xv2, w1, w2)
-                ctx.use_triton = True
-                ctx.w1 = w1
-                ctx.w2 = w2
-                ctx.save_for_backward(xq, xk1, xk2, xv1, xv2, output, max_plus_lse)
+                # Il kernel Triton usa exp2(x * log2(e) / sqrt(D)) = exp(x / sqrt(D)).
+                # Lo scaling effettivo sui logits è 1/sqrt(D). Il backward PyTorch
+                # deve usare lo stesso valore per recomputare correttamente.
+                ctx.sm_scale = 1.0 / math.sqrt(head_dim)
+                ctx.save_for_backward(xq, xk1, xk2, xv1, xv2)
                 return output
             except Exception:
                 pass  # fallback a PyTorch
 
         # Fallback PyTorch memory-efficient
         output, _ = _torch_2simplicial_fwd(xq, xk1, xk2, xv1, xv2, w1, w2)
-        ctx.use_triton = False
+        ctx.sm_scale = 1.0 / math.sqrt(head_dim)
         ctx.save_for_backward(xq, xk1, xk2, xv1, xv2)
-        ctx.w1 = w1
-        ctx.w2 = w2
-        ctx.sm_scale = 1.0 / math.sqrt(xq.shape[-1])
         return output
 
     @staticmethod
     def backward(ctx, grad_output):
-        if ctx.use_triton:
-            q, k1, k2, v1, v2, output, max_plus_lse = ctx.saved_tensors
-            dq, dk1, dk2, dv1, dv2 = triton_bwd(
-                q, k1, k2, v1, v2, ctx.w1, ctx.w2, output, grad_output, max_plus_lse,
-            )
-            return dq, dk1, dk2, dv1, dv2, None, None
-
-        # Fallback PyTorch backward
+        # NOTA: usiamo SEMPRE il fallback PyTorch per il backward.
+        # triton_bwd() ha parametri invertiti e assert w2==32 non rispettato.
+        # Il forward Triton è più veloce (520 TFLOPS), ma il backward PyTorch
+        # è corretto e funziona con qualsiasi w1, w2.
         q, k1, k2, v1, v2 = ctx.saved_tensors
         B, S, H, D = q.shape
         sm_scale = ctx.sm_scale

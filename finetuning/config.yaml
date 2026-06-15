@@ -7,9 +7,10 @@ model_name: "meta-llama/Llama-3.1-8B"
 attention_type: "simplicial"    # "simplicial" | "gram_det"
 simplicial_indices: [16, 20, 24, 28]
 alpha: 0.01
-w1: 32
+w1: 64
 w2: 256
 gram_window: 2
+use_triton: true
 
 # Dataset
 dataset_name: "allenai/c4"
@@ -36,16 +37,16 @@ beta2: 0.95
 
 # Monitoring
 log_every: 10
-val_every: 500
+val_every: 50
 save_every: 2000  # ogni checkpoint ~17 GB, con 100 GB disco teniamo solo ultimi 2
 
 # Early stopping
-early_stop_ppl: 9999        # disabilitato per training fresco (riattivare a PPL < 50)
+early_stop_ppl: 100         # stop se PPL > 100 nei primi step
 max_perplexity_gap: 10.0   # legacy: gap PPL rispetto baseline
 
 # Weights & Biases
 wandb_project: "simplex-filters"
-wandb_run_name: "llama-simplicial-finetune-v2"
+wandb_run_name: "llama-h100-w64-w256-triton-fwd-py-bwd"
 
 # Checkpoint
 checkpoint_dir: "./checkpoints"
