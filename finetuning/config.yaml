@@ -30,7 +30,7 @@ warmup_steps: 100
 # Learning rates
 lr_k2v2: 5.0e-4           # 2.5x rispetto a prima — K2/V2 partono da random noise, gradiente debole
 lr_k1v1: 2.0e-5           # invariato — pesi pretrained, non vogliamo romperli
-lr_standard: 5e-6          # learning rate per layer non-simpliciali (standard)
+lr_standard: 0             # 0 = freezing completo dei layer non-simpliciali
 weight_decay: 0.01
 beta1: 0.9
 beta2: 0.95
