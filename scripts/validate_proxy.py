@@ -361,12 +361,12 @@ def main():
                         help="Path al checkpoint")
     parser.add_argument("--attention-type", type=str, default="gram_det",
                         choices=["simplicial", "gram_det"])
-    parser.add_argument("--model", type=str, default="meta-llama/Llama-3.1-8B",
-                        help="Nome del modello HuggingFace (default: meta-llama/Llama-3.1-8B)")
-    parser.add_argument("--simplicial-indices", type=str, default="16,20,24,28",
-                        help="Indici layer simpliciali, separati da virgola (default: 16,20,24,28)")
-    parser.add_argument("--layer", type=int, default=28,
-                        help="Layer da analizzare (default: 28)")
+    parser.add_argument("--model", type=str, default="meta-llama/Llama-3.2-1B",
+                        help="Nome del modello HuggingFace (default: meta-llama/Llama-3.2-1B)")
+    parser.add_argument("--simplicial-indices", type=str, default="8,10,12,14",
+                        help="Indici layer simpliciali, separati da virgola (default: 8,10,12,14)")
+    parser.add_argument("--layer", type=int, default=14,
+                        help="Layer da analizzare (default: 14, ultimo layer GramDet)")
     parser.add_argument("--seq-length", type=int, default=256)
     parser.add_argument("--num-batches", type=int, default=3)
     parser.add_argument("--gram-window", type=int, default=8,
