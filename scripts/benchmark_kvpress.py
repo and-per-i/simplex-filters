@@ -158,9 +158,11 @@ def get_model_and_tokenizer(gramdet_mode=False, gram_window=8):
     return model, tokenizer
 
 
-def set_eviction_params(model, U_mean, budget, strategy):
-    """Imposta eviction_params sui layer GramDet."""
-    for idx in INDICES:
+def set_eviction_params(model, U_mean, budget, strategy, eviction_indices=None):
+    """Imposta eviction_params sui layer specificati."""
+    if eviction_indices is None:
+        eviction_indices = INDICES
+    for idx in eviction_indices:
         attn = model.model.layers[idx].self_attn
         if hasattr(attn, "eviction_params"):
             attn.eviction_params = {
@@ -170,15 +172,17 @@ def set_eviction_params(model, U_mean, budget, strategy):
             }
 
 
-def clear_eviction_params(model):
-    """Rimuove eviction_params dai layer GramDet."""
-    for idx in INDICES:
+def clear_eviction_params(model, eviction_indices=None):
+    """Rimuove eviction_params dai layer specificati."""
+    if eviction_indices is None:
+        eviction_indices = INDICES
+    for idx in eviction_indices:
         attn = model.model.layers[idx].self_attn
         if hasattr(attn, "eviction_params"):
             attn.eviction_params = None
 
 
-def run_benchmark(gramdet_mode=False, gram_window=8):
+def run_benchmark(gramdet_mode=False, gram_window=8, eviction_layers=None):
     # Prepara dati
     _, tokenizer = get_model_and_tokenizer()
     
@@ -246,9 +250,9 @@ def run_benchmark(gramdet_mode=False, gram_window=8):
                     # via eviction_params (nessun kvpress coinvolto su questi layer).
                     
                     # Strategia: Grassmann orthogonal score
-                    set_eviction_params(model, U_mean, budget, "qfilter")
+                    set_eviction_params(model, U_mean, budget, "qfilter", eviction_layers)
                     out = model(prefix, use_cache=True)
-                    clear_eviction_params(model)
+                    clear_eviction_params(model, eviction_layers)
                     out_suffix = model(suffix, past_key_values=out.past_key_values)
                     logits = out_suffix.logits
                     loss_fct = torch.nn.CrossEntropyLoss()
@@ -258,9 +262,9 @@ def run_benchmark(gramdet_mode=False, gram_window=8):
                     results[budget]["grassmann"].append(loss.item())
                     
                     # Strategia: Random eviction (stessi layer)
-                    set_eviction_params(model, U_mean, budget, "random")
+                    set_eviction_params(model, U_mean, budget, "random", eviction_layers)
                     out = model(prefix, use_cache=True)
-                    clear_eviction_params(model)
+                    clear_eviction_params(model, eviction_layers)
                     out_suffix = model(suffix, past_key_values=out.past_key_values)
                     logits = out_suffix.logits
                     shift_logits = logits[:, :-1, :].reshape(-1, logits.shape[-1])
@@ -335,5 +339,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Benchmark KV eviction con kvpress")
     parser.add_argument("--gramdet", action="store_true", help="Usa modello GramDet ibrido (step 0)")
     parser.add_argument("--gram-window", type=int, default=8, help="Half-window per GramDet (default: 8)")
+    parser.add_argument("--eviction-layers", type=str, default=None, help="Layer dove applicare eviction, separati da virgola (default: stessi layer GramDet)")
     args = parser.parse_args()
-    run_benchmark(gramdet_mode=args.gramdet, gram_window=args.gram_window)
+    eviction_layers = [int(x) for x in args.eviction_layers.split(",")] if args.eviction_layers else None
+    run_benchmark(gramdet_mode=args.gramdet, gram_window=args.gram_window, eviction_layers=eviction_layers)

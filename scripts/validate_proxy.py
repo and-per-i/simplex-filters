@@ -472,7 +472,16 @@ def main():
             print(f"  Layer {lidx}: Spearman ρ = {rho:+.4f}")
         print(f"  {'─'*45}")
         print(f"  Media ρ: {rho_mean:.4f}  ±  {rho_std:.4f}")
-        print(f"  {GREEN if rho_mean > 0 else RED}  Segnale dominante: {'POSITIVO ✓' if rho_mean > 0 else 'NEGATIVO ✗'}{NC}")
+        if rho_mean > 0.05:
+            sig_color = GREEN
+            sig_label = "POSITIVO — correlazione genuina"
+        elif rho_mean < -0.05:
+            sig_color = RED
+            sig_label = "NEGATIVO — anti-correlazione"
+        else:
+            sig_color = YELLOW
+            sig_label = "NEUTRO (~0) — nessuna correlazione sistematica"
+        print(f"  {sig_color}  Segnale dominante: {sig_label}{NC}")
     elif len(all_rho) == 1:
         print(f"\n{BOLD}{'='*65}{NC}")
         print(f"{BOLD}  RISULTATO — LAYER {args.layer}{NC}")
