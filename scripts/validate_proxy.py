@@ -367,6 +367,8 @@ def main():
                         help="Indici layer simpliciali, separati da virgola (default: 8,10,12,14)")
     parser.add_argument("--layer", type=int, default=14,
                         help="Layer da analizzare (default: 14, ultimo layer GramDet)")
+    parser.add_argument("--all-layers", action="store_true",
+                        help="Valida proxy su TUTTI i layer in simplicial-indices invece di uno solo")
     parser.add_argument("--seq-length", type=int, default=256)
     parser.add_argument("--num-batches", type=int, default=3)
     parser.add_argument("--gram-window", type=int, default=8,
@@ -403,105 +405,74 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     tokenizer.pad_token = tokenizer.eos_token
 
-    # TRUE SCORE
-    print(f"\n{BOLD}FASE 1/2: Calcolo TRUE score (attenzione){NC}")
-    print(f"  {args.num_batches} batch x {args.seq_length} token...")
-
-    if args.attention_type == "gram_det":
-        true_scores, k_vectors = compute_true_score(
-            model, tokenizer, args.layer,
-            args.attention_type, head_dim, num_q_heads, device,
-            args.seq_length, args.num_batches,
-        )
-        N = k_vectors.shape[0]
-        print(f"  TRUE score calcolato: {N} chiavi (GramDet)")
-    else:
-        (true_scores_k1, k1_vectors), (true_scores_k2, k2_vectors) = compute_true_score(
-            model, tokenizer, args.layer,
-            args.attention_type, head_dim, num_q_heads, device,
-            args.seq_length, args.num_batches,
-        )
-        N1, N2 = k1_vectors.shape[0], k2_vectors.shape[0]
-        print(f"  TRUE score calcolato: {N1} chiavi K1 + {N2} chiavi K2 (trilineare)")
-
-    # PROXY SCORE
-    print(f"\n{BOLD}FASE 2/2: Calcolo PROXY score (Q-filter ortogonale){NC}")
-
-    if args.attention_type == "gram_det":
-        proxy_scores, U_mean, sigma1, sigma2 = compute_proxy_score_gramdet(
-            k_vectors.to(device), proxy_type=args.proxy_type,
-        )
-        proxy_label = "ortogonale (∥k − P̄k∥)" if args.proxy_type == "orthogonal" else "proiezione (Q-filter, deprecato)"
-        print(f"  PROXY score ({proxy_label}): σ₁={sigma1:.4f}, σ₂={sigma2:.4f}")
-
-        true_all = true_scores
-        proxy_all = proxy_scores.cpu()
-        N_total = N
-
-    else:
-        proxy_k1, proxy_k2, U_mean = compute_proxy_score_trilinear(
-            k1_vectors.to(device), k2_vectors.to(device),
-        )
-        proxy_label = "ortogonale (∥k − P̄k∥) — piani da coppie (K1_j, K2_j) reali"
-        print(f"  PROXY score ({proxy_label})")
-
-        true_all = torch.cat([true_scores_k1.cpu(), true_scores_k2.cpu()], dim=0)
-        proxy_all = torch.cat([proxy_k1.cpu(), proxy_k2.cpu()], dim=0)
-        N_total = len(true_all)
-
-    # Metriche di correlazione
-    print(f"\n{BOLD}{'='*65}{NC}")
-    print(f"{BOLD}  CORRELAZIONE TRUE vs PROXY{NC}")
-    print(f"{BOLD}{'='*65}{NC}")
-
-    r_pearson, p_pearson = pearsonr(true_all.numpy(), proxy_all.numpy())
-    r_spearman, p_spearman = spearmanr(true_all.numpy(), proxy_all.numpy())
-
-    top_k_frac = 0.2
-    k = max(1, int(N_total * top_k_frac))
-
-    top_true = torch.topk(true_all, k).indices.numpy()
-    top_proxy = torch.topk(proxy_all, k).indices.numpy()
-    top_overlap = len(set(top_true) & set(top_proxy)) / k * 100
-
-    bottom_true = torch.topk(true_all, k, largest=False).indices.numpy()
-    bottom_proxy = torch.topk(proxy_all, k, largest=False).indices.numpy()
-    bottom_overlap = len(set(bottom_true) & set(bottom_proxy)) / k * 100
-
-    print(f"\n  Pearson r:        {r_pearson:.4f} (p={p_pearson:.2e})  "
-          f"{'✅ r>0.7' if r_pearson > 0.7 else '🟡 0.4<r<0.7' if r_pearson > 0.4 else '🔴 r<0.4'}")
-    print(f"  Spearman ρ:       {r_spearman:.4f} (p={p_spearman:.2e})  "
-          f"{'✅ ρ>0.7' if r_spearman > 0.7 else '🟡 0.4<ρ<0.7' if r_spearman > 0.4 else '🔴 ρ<0.4'}")
-    print(f"  Top-{k} overlap:    {top_overlap:.1f}%  "
-          f"{'✅ alta' if top_overlap > 60 else '🟡 media' if top_overlap > 30 else '🔴 bassa'}")
-    print(f"  Bottom-{k} overlap: {bottom_overlap:.1f}%  "
-          f"{'✅ alta' if bottom_overlap > 60 else '🟡 media' if bottom_overlap > 30 else '🔴 bassa'}")
-
-    print(f"\n  {BOLD}Diagnosi:{NC}")
-    if r_spearman > 0.7:
-        print(f"  {GREEN}✅ PROXY VALIDO{NC} — il piano medio preserva l'ordinamento delle chiavi.")
-    elif r_spearman > 0.4:
-        print(f"  {YELLOW}🟡 PROXY PARZIALE{NC} — correlazione moderata.")
-    else:
-        print(f"  {RED}🔴 PROXY INVALIDO{NC} — il piano medio NON preserva l'ordinamento.")
-
-    print(f"\n  Min true score:   {true_all.min().item():.6f}")
-    print(f"  Max true score:   {true_all.max().item():.6f}")
-    print(f"  Min proxy score:  {proxy_all.min().item():.6f}")
-    print(f"  Max proxy score:  {proxy_all.max().item():.6f}")
-
-    if args.attention_type != "gram_det":
-        print(f"\n  {BOLD}  — Per componente:{NC}")
-        r_k1, _ = pearsonr(true_scores_k1.numpy(), proxy_k1.cpu().numpy())
-        r_k2, _ = pearsonr(true_scores_k2.numpy(), proxy_k2.cpu().numpy())
-        print(f"    K1: Pearson r = {r_k1:.4f}")
-        print(f"    K2: Pearson r = {r_k2:.4f}")
-
-        rho_k1, _ = spearmanr(true_scores_k1.numpy(), proxy_k1.cpu().numpy())
-        rho_k2, _ = spearmanr(true_scores_k2.numpy(), proxy_k2.cpu().numpy())
-        print(f"    K1: Spearman ρ = {rho_k1:.4f}")
-        print(f"    K2: Spearman ρ = {rho_k2:.4f}")
-
+    layers_to_test = simplicial_indices if args.all_layers else [args.layer]
+    all_rho = []
+    
+    for layer_idx in layers_to_test:
+        print(f"\n{'='*65}")
+        print(f"{BOLD}  LAYER {layer_idx}{NC}")
+        print(f"{'='*65}")
+        
+        # TRUE SCORE per questo layer
+        print(f"\n  FASE 1/2: Calcolo TRUE score...")
+        if args.attention_type == "gram_det":
+            true_scores, k_vectors = compute_true_score(
+                model, tokenizer, layer_idx,
+                args.attention_type, head_dim, num_q_heads, device,
+                args.seq_length, args.num_batches,
+            )
+            N = k_vectors.shape[0]
+        else:
+            (true_scores_k1, k1_vectors), (true_scores_k2, k2_vectors) = compute_true_score(
+                model, tokenizer, layer_idx,
+                args.attention_type, head_dim, num_q_heads, device,
+                args.seq_length, args.num_batches,
+            )
+            N1, N2 = k1_vectors.shape[0], k2_vectors.shape[0]
+        
+        # PROXY SCORE per questo layer
+        print(f"  FASE 2/2: Calcolo PROXY score...")
+        if args.attention_type == "gram_det":
+            proxy_scores, _, sigma1, sigma2 = compute_proxy_score_gramdet(
+                k_vectors.to(device), proxy_type=args.proxy_type,
+            )
+            true_all = true_scores
+            proxy_all = proxy_scores.cpu()
+            N_total = N
+        else:
+            proxy_k1, proxy_k2, _ = compute_proxy_score_trilinear(
+                k1_vectors.to(device), k2_vectors.to(device),
+            )
+            true_all = torch.cat([true_scores_k1.cpu(), true_scores_k2.cpu()], dim=0)
+            proxy_all = torch.cat([proxy_k1.cpu(), proxy_k2.cpu()], dim=0)
+            N_total = len(true_all)
+        
+        # Correlazione per questo layer
+        r_pearson, p_pearson = pearsonr(true_all.numpy(), proxy_all.numpy())
+        r_spearman, p_spearman = spearmanr(true_all.numpy(), proxy_all.numpy())
+        all_rho.append(r_spearman)
+        
+        print(f"\n  Pearson r:   {r_pearson:+.4f}  (p={p_pearson:.2e})")
+        print(f"  Spearman ρ:  {r_spearman:+.4f}  (p={p_spearman:.2e})")
+    
+    # Riepilogo multi-layer
+    if len(all_rho) > 1:
+        rho_mean = np.mean(all_rho)
+        rho_std = np.std(all_rho)
+        print(f"\n{BOLD}{'='*65}{NC}")
+        print(f"{BOLD}  RIEPILOGO — TUTTI I LAYER{NC}")
+        print(f"{BOLD}{'='*65}{NC}")
+        for i, (lidx, rho) in enumerate(zip(layers_to_test, all_rho)):
+            print(f"  Layer {lidx}: Spearman ρ = {rho:+.4f}")
+        print(f"  {'─'*45}")
+        print(f"  Media ρ: {rho_mean:.4f}  ±  {rho_std:.4f}")
+        print(f"  {GREEN if rho_mean > 0 else RED}  Segnale dominante: {'POSITIVO ✓' if rho_mean > 0 else 'NEGATIVO ✗'}{NC}")
+    elif len(all_rho) == 1:
+        print(f"\n{BOLD}{'='*65}{NC}")
+        print(f"{BOLD}  RISULTATO — LAYER {args.layer}{NC}")
+        print(f"{BOLD}{'='*65}{NC}")
+        print(f"  Spearman ρ = {all_rho[0]:+.4f}")
+    
     return 0
 
 
