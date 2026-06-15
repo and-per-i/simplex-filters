@@ -186,6 +186,9 @@ class SimplicialAttentionFunction(torch.autograd.Function):
         dv1 = torch.zeros_like(v1)
         dv2 = torch.zeros_like(v2)
 
+        k2_bias = 1.0 / D
+        v2_bias = 1.0
+
         for i in range(S):
             j_start = max(0, i - w1) if w1 > 0 else 0
             j_end = i + 1 if w1 > 0 else S
@@ -194,12 +197,14 @@ class SimplicialAttentionFunction(torch.autograd.Function):
 
             q_i = q[:, i:i+1, :, :]  # [B, 1, H, D]
             k1_w = k1[:, j_start:j_end, :, :]
-            k2_w = k2[:, k_start:k_end, :, :]
+            k2_w = k2[:, k_start:k_end, :, :] + k2_bias  # <-- K2_BIAS
             v1_w = v1[:, j_start:j_end, :, :]
-            v2_w = v2[:, k_start:k_end, :, :]
+            v2_w = v2[:, k_start:k_end, :, :] + v2_bias  # <-- V2_BIAS
             dO_i = grad_output[:, i:i+1, :, :]
 
             # Recompute logits e attn per questa posizione
+            # NOTA: k2_w e v2_w INCLUDONO i bias come nel forward Triton,
+            # altrimenti i gradienti sarebbero sbagliati.
             logits = torch.einsum("bthd,bshd,brhd->bh tsr", q_i, k1_w, k2_w) * sm_scale
             logits = logits.squeeze(2)  # [B, H, w1, w2]
             shape = logits.shape

@@ -6,7 +6,7 @@
 model_name: "meta-llama/Llama-3.2-1B"
 attention_type: "simplicial"    # "simplicial" | "gram_det"
 simplicial_indices: [7, 9, 11, 13]
-alpha: 0.01
+alpha: 0.001
 w1: 64
 w2: 256
 gram_window: 2
